@@ -1,4 +1,5 @@
-"$schema" = "https://raw.githubusercontent.com/SARDONYX-sard/papyrus_analyzer/refs/tags/0.0.1-dev.6c38773/schemas/papyrus.schema.json"
+# "$schema" = "https://raw.githubusercontent.com/SARDONYX-sard/papyrus_analyzer/refs/tags/0.2.1/schemas/papyrus.schema.json"
+"$schema" = "../../schemas/papyrus.schema.json"
 
 [package]
 name    = "MyMod"
@@ -53,7 +54,7 @@ keyword-case = "canonical"
 # variable-case = "canonical"   # locals · parameters · script variables
 # flag-case = "canonical"       # Hidden · Conditional
 #
-# [format.keywords]             # one keyword, case only; wins over keyword-case
+# [format.keywords] # one keyword, case only; wins over keyword-case
 # as = "As"
 
 # Several projects, like Cargo workspaces → in the papyrus.toml of the parent folder.

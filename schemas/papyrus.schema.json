@@ -66,9 +66,7 @@
           "items": {
             "type": "string"
           },
-          "default": [
-            "."
-          ],
+          "default": ["."],
           "description": "Directories of the scripts to compile, searched recursively."
         },
         "output": {
@@ -136,19 +134,58 @@
         }
       },
       "properties": {
-        "all": { "$ref": "#/properties/lints/definitions/level", "description": "Every lint." },
-        "warnings": { "$ref": "#/properties/lints/definitions/level", "description": "deny: every warning is an error (like -D warnings)." },
-        "correctness": { "$ref": "#/properties/lints/definitions/level", "description": "Code that is wrong (default: deny)." },
-        "suspicious": { "$ref": "#/properties/lints/definitions/level", "description": "Code that is probably wrong or useless (default: warn)." },
-        "complexity": { "$ref": "#/properties/lints/definitions/level", "description": "Code that could be simpler (default: warn)." },
-        "style": { "$ref": "#/properties/lints/definitions/level", "description": "Code that does not follow conventions (default: warn)." },
-        "pedantic": { "$ref": "#/properties/lints/definitions/level", "description": "Lints that are often too strict (default: allow)." },
-        "index-out-of-bounds": { "$ref": "#/properties/lints/definitions/level", "description": "correctness: a constant index outside of an array of known length (`New Int[4]`, then `a[4]`)." },
-        "unchecked-cast": { "$ref": "#/properties/lints/definitions/level", "description": "pedantic: the result of a cast between objects used without checking None." },
-        "unchecked-call-result": { "$ref": "#/properties/lints/definitions/level", "description": "pedantic: the result of a function returning an object (which may always be None) used without checking None." },
-        "unused-local": { "$ref": "#/properties/lints/definitions/level", "description": "suspicious: a local variable whose value is never read." },
-        "unreachable-code": { "$ref": "#/properties/lints/definitions/level", "description": "suspicious: statements after a Return." },
-        "bool-literal-comparison": { "$ref": "#/properties/lints/definitions/level", "description": "complexity: a comparison with True or False." }
+        "all": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "Every lint."
+        },
+        "warnings": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "deny: every warning is an error (like -D warnings)."
+        },
+        "correctness": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "Code that is wrong (default: deny)."
+        },
+        "suspicious": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "Code that is probably wrong or useless (default: warn)."
+        },
+        "complexity": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "Code that could be simpler (default: warn)."
+        },
+        "style": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "Code that does not follow conventions (default: warn)."
+        },
+        "pedantic": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "Lints that are often too strict (default: allow)."
+        },
+        "index-out-of-bounds": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "correctness: a constant index outside of an array of known length (`New Int[4]`, then `a[4]`)."
+        },
+        "unchecked-cast": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "pedantic: the result of a cast between objects used without checking None."
+        },
+        "unchecked-call-result": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "pedantic: the result of a function returning an object (which may always be None) used without checking None."
+        },
+        "unused-local": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: a local variable whose value is never read."
+        },
+        "unreachable-code": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: statements after a Return."
+        },
+        "bool-literal-comparison": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "complexity: a comparison with True or False."
+        }
       }
     },
     "format": {
@@ -159,10 +196,7 @@
         "indent-style": {
           "description": "Indent with spaces or tabs.",
           "type": "string",
-          "enum": [
-            "space",
-            "tab"
-          ]
+          "enum": ["space", "tab"]
         },
         "indent-size": {
           "minimum": 1,
@@ -183,16 +217,64 @@
             "UPPERCASE"
           ]
         },
-        "script-case": { "$ref": "#/definitions/nameCase", "description": "Spelling of script names: types, extends, Import, receivers like Debug.Trace. canonical is the ScriptName of the script (actor -> Actor)." },
-        "function-case": { "$ref": "#/definitions/nameCase", "description": "Spelling of functions and events. canonical is their declaration, or the one of the parent function they override (getvalue() -> GetValue())." },
-        "property-case": { "$ref": "#/definitions/nameCase", "description": "Spelling of properties. canonical is their declaration." },
-        "variable-case": { "$ref": "#/definitions/nameCase", "description": "Spelling of local variables, parameters and script variables. canonical is their declaration." },
-        "flag-case": { "$ref": "#/definitions/nameCase", "description": "Spelling of user flags. canonical is the flags file (hidden -> Hidden)." },
+        "script-case": {
+          "$ref": "#/definitions/nameCase",
+          "description": "Spelling of script names: types, extends, Import, receivers like Debug.Trace. canonical is the ScriptName of the script (actor -> Actor)."
+        },
+        "function-case": {
+          "$ref": "#/definitions/nameCase",
+          "description": "Spelling of functions and events. canonical is their declaration, or the one of the parent function they override (getvalue() -> GetValue())."
+        },
+        "property-case": {
+          "$ref": "#/definitions/nameCase",
+          "description": "Spelling of properties. canonical is their declaration."
+        },
+        "variable-case": {
+          "$ref": "#/definitions/nameCase",
+          "description": "Spelling of local variables, parameters and script variables. canonical is their declaration."
+        },
+        "flag-case": {
+          "$ref": "#/definitions/nameCase",
+          "description": "Spelling of user flags. canonical is the flags file (hidden -> Hidden)."
+        },
         "keywords": {
           "description": "Spelling of single keywords, e.g. { as = \"As\" }. Only the case may change.",
+          "additionalProperties": false,
           "type": "object",
-          "additionalProperties": {
-            "type": "string"
+          "properties": {
+            "as": { "type": "string" },
+            "auto": { "type": "string" },
+            "autoreadonly": { "type": "string" },
+            "bool": { "type": "string" },
+            "else": { "type": "string" },
+            "elseif": { "type": "string" },
+            "endevent": { "type": "string" },
+            "endfunction": { "type": "string" },
+            "endif": { "type": "string" },
+            "endproperty": { "type": "string" },
+            "endstate": { "type": "string" },
+            "endwhile": { "type": "string" },
+            "event": { "type": "string" },
+            "extends": { "type": "string" },
+            "false": { "type": "string" },
+            "float": { "type": "string" },
+            "function": { "type": "string" },
+            "global": { "type": "string" },
+            "if": { "type": "string" },
+            "import": { "type": "string" },
+            "int": { "type": "string" },
+            "native": { "type": "string" },
+            "new": { "type": "string" },
+            "none": { "type": "string" },
+            "parent": { "type": "string" },
+            "property": { "type": "string" },
+            "return": { "type": "string" },
+            "scriptname": { "type": "string" },
+            "self": { "type": "string" },
+            "state": { "type": "string" },
+            "string": { "type": "string" },
+            "true": { "type": "string" },
+            "while": { "type": "string" }
           }
         },
         "max-width": {
@@ -211,11 +293,7 @@
           "default": "auto",
           "description": "Line break of formatted files; auto keeps the one of the file.",
           "type": "string",
-          "enum": [
-            "auto",
-            "lf",
-            "crlf"
-          ]
+          "enum": ["auto", "lf", "crlf"]
         },
         "final-newline": {
           "default": true,
@@ -277,7 +355,10 @@
         "additionalProperties": false,
         "required": ["path"],
         "properties": {
-          "path": { "type": "string", "description": "The directory of the project (with a papyrus.toml)." }
+          "path": {
+            "type": "string",
+            "description": "The directory of the project (with a papyrus.toml)."
+          }
         }
       }
     }
@@ -286,7 +367,14 @@
     "nameCase": {
       "default": "canonical",
       "type": "string",
-      "enum": ["canonical", "preserve", "PascalCase", "camelCase", "lowercase", "UPPERCASE"],
+      "enum": [
+        "canonical",
+        "preserve",
+        "PascalCase",
+        "camelCase",
+        "lowercase",
+        "UPPERCASE"
+      ],
       "markdownDescription": "`canonical`: as defined. `preserve`: as written. The other cases start from the definition. Names without known definition are kept."
     }
   }
