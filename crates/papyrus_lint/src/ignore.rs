@@ -443,7 +443,7 @@ pub fn attribute_hover(
     Some((
         range,
         format!(
-            "```papyrus\n{}\n```\n*attribute `{syntax}`*\n\n{}\n\nApplies to {scope}.\n\nExample:\n\n```papyrus\n{}\n```",
+            "```papyrus\n{}\n```\n*attribute `{syntax}`*\n\n{}\n\nApplies to {scope}.\n\n# Examples\n\n```papyrus\n{}\n```",
             attr.path, doc.doc, doc.example
         ),
     ))
@@ -718,7 +718,7 @@ mod tests {
         let (word, md) = hover("mock").unwrap();
         assert_eq!(word, "mock");
         assert!(md.contains("runs instead of the native"), "{md}");
-        assert!(md.contains("Example:\n\n```papyrus\n; #[mock(Utility.RandomInt)]"), "{md}");
+        assert!(md.contains("# Examples\n\n```papyrus\n; #[mock(Utility.RandomInt)]"), "{md}");
         let (word, md) = hover("Utility.").unwrap();
         assert_eq!(word, "Utility.RandomInt");
         assert!(

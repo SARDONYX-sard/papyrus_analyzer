@@ -319,7 +319,7 @@ fn fragment_markers_have_hovers_and_grammar_colors() {
     };
     let (word, md) = hover_at("BEGIN FRAGMENT CODE", 3).unwrap();
     assert_eq!(word, "BEGIN FRAGMENT CODE");
-    assert!(md.contains("Creation Kit fragment") && md.contains("Example:"), "{md}");
+    assert!(md.contains("Creation Kit fragment") && md.contains("# Examples\n\n"), "{md}");
     assert_eq!(hover_at("BEGIN FRAGMENT Fragment_0", 3).unwrap().0, "BEGIN FRAGMENT");
     assert_eq!(hover_at(";END FRAGMENT\n", 3).unwrap().0, "END FRAGMENT");
     assert_eq!(hover_at("INDEX 1", 2).unwrap().0, "NEXT FRAGMENT INDEX");

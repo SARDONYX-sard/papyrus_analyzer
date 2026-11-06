@@ -91,7 +91,7 @@ fn fragment_hover(sema: &Sema<'_>, offset: TextSize) -> Option<HoverResult> {
     Some(HoverResult {
         range,
         markdown: format!(
-            "```papyrus\n{}\n```\n*Creation Kit fragment*\n\n{}\n\nThe Creation Kit finds its code by these comments: do not edit them.\n\nExample:\n\n```papyrus\n{example}\n```",
+            "```papyrus\n{}\n```\n*Creation Kit fragment*\n\n{}\n\nThe Creation Kit finds its code by these comments: do not edit them.\n\n# Examples\n\n```papyrus\n{example}\n```",
             marker.to_ascii_uppercase(),
             fragment_doc(marker)?
         ),
