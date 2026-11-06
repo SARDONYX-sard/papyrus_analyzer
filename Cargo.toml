@@ -9,7 +9,6 @@ edition      = "2024"
 rust-version = "1.96"
 repository   = "https://github.com/SARDONYX-sard/papyrus"
 license      = "MIT OR Apache-2.0"
-organization = ["SARDONYX"]
 
 [profile.dev]
 debug = 1
