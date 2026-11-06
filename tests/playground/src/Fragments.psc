@@ -1,3 +1,4 @@
+; #![allow(all)]
 ; A fragment of the Creation Kit, as it generates them. Hover the markers
 ; (;BEGIN FRAGMENT CODE, ;BEGIN CODE...): they have the color of attributes.
 ; Format this file: nothing changes until ;END FRAGMENT CODE, even the odd code
