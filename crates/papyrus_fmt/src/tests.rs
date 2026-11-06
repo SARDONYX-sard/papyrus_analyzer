@@ -188,6 +188,38 @@ fn ignore_comments_keep_code_as_written() {
 }
 
 #[test]
+fn fragments_of_the_creation_kit_are_kept() {
+    // Odd spacing, case, tabs, trailing spaces and blank lines, and code after.
+    let fragment = ";BEGIN FRAGMENT CODE - Do not edit anything between this and the end comment\n;NEXT FRAGMENT INDEX 2\nScriptname   T Extends TopicInfo Hidden\n\n\n\n;BEGIN FRAGMENT Fragment_0\nFunction Fragment_0(ObjectReference akSpeakerRef)\nActor akSpeaker = akSpeakerRef as Actor\n;BEGIN CODE\n\tif(x==1)  \n  \n        game.getplayer( ).kill()\nendif\n;END CODE\nEndFunction\n;END FRAGMENT\n\n;END FRAGMENT CODE - Do not edit anything between this and the begin comment\n";
+    let options = FormatOptions::default();
+    let src = format!("{fragment}\n\n\nint property x auto\nfunction g()\nx=1\nendfunction\n");
+    let out = format(&src, &options).unwrap();
+    assert_eq!(
+        out,
+        format!("{fragment}\nInt Property x Auto\nFunction g()\n    x = 1\nEndFunction\n")
+    );
+    assert_eq!(format(&out, &options).unwrap(), out, "not idempotent");
+
+    // Only the line breaks follow the options.
+    let crlf = src.replace('\n', "\r\n");
+    assert_eq!(format(&crlf, &options).unwrap(), out.replace('\n', "\r\n"));
+
+    // Without end: until the last code, stable.
+    let open = ";BEGIN FRAGMENT CODE\nscriptname   T\n\n\n\nint   x\n\n\n";
+    let once = format(open, &options).unwrap();
+    assert_eq!(once, ";BEGIN FRAGMENT CODE\nscriptname   T\n\n\n\nint   x\n");
+    assert_eq!(format(&once, &options).unwrap(), once, "not idempotent");
+
+    // `;BEGIN FRAGMENT Fragment_0` alone, or a marker after code, starts nothing.
+    let other =
+        ";BEGIN FRAGMENT Fragment_0\nscriptname T\nint   x ; BEGIN FRAGMENT CODE\nint   y\n";
+    assert_eq!(
+        format(other, &options).unwrap(),
+        ";BEGIN FRAGMENT Fragment_0\nScriptName T\nInt x ; BEGIN FRAGMENT CODE\nInt y\n"
+    );
+}
+
+#[test]
 fn max_width_breaks_long_lines() {
     let src = "ScriptName A\nFunction F()\nFoo(alpha, beta, gamma, delta)\nIf alpha && beta || gamma\nEndIf\nEndFunction\n";
     // Kept as written by default.
@@ -259,6 +291,7 @@ fn corpus_formats_safely_and_idempotently() {
         return;
     }
     let mut failures = Vec::new();
+    let mut fragments = 0;
     for path in &files {
         let bytes = std::fs::read(path).unwrap();
         let text = String::from_utf8_lossy(&bytes);
@@ -271,6 +304,18 @@ fn corpus_formats_safely_and_idempotently() {
                         once.lines().zip(twice.lines()).position(|(a, b)| a != b).unwrap_or(0) + 1;
                     failures.push(format!("{}: not idempotent at line {line}", path.display()));
                 }
+                let fragment = |s: &str| -> Option<String> {
+                    let s = s.replace("\r\n", "\n");
+                    let start = s.find(";BEGIN FRAGMENT CODE")?;
+                    let end = s[start..].find(";END FRAGMENT CODE")? + start;
+                    Some(s[start..end].to_owned())
+                };
+                if let Some(before) = fragment(&text) {
+                    fragments += 1;
+                    if fragment(&once).as_ref() != Some(&before) {
+                        failures.push(format!("{}: fragment changed", path.display()));
+                    }
+                }
             }
             Err(FormatError::SyntaxErrors(_)) => {}
             Err(e) => failures.push(format!("{}: {e}", path.display())),
@@ -282,4 +327,5 @@ fn corpus_formats_safely_and_idempotently() {
         failures.len(),
         failures.iter().take(30).cloned().collect::<Vec<_>>().join("\n")
     );
+    assert!(fragments > 0, "no fragment in the corpus");
 }

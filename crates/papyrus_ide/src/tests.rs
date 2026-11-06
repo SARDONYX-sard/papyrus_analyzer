@@ -308,6 +308,52 @@ fn signature_help_active_param() {
 }
 
 #[test]
+fn fragment_markers_have_hovers_and_grammar_colors() {
+    let src = ";BEGIN FRAGMENT CODE - Do not edit\n;NEXT FRAGMENT INDEX 1\nScriptName T\n;BEGIN FRAGMENT Fragment_0\nFunction Fragment_0()\n;BEGIN CODE\n;just a comment\n;END CODE\nEndFunction\n;END FRAGMENT\n;END FRAGMENT CODE - Do not edit\n;END CODE outside\n";
+    let mut ws = Workspace::new();
+    let file = ws.set_open(PathBuf::from("/ws/T.psc"), Arc::from(src), 0);
+    let hover_at = |needle: &str, delta: usize| {
+        let offset = src.find(needle).unwrap() + delta;
+        hover(&ws, file, TextSize::new(offset as u32))
+            .map(|h| (src[h.range].to_owned(), h.markdown))
+    };
+    let (word, md) = hover_at("BEGIN FRAGMENT CODE", 3).unwrap();
+    assert_eq!(word, "BEGIN FRAGMENT CODE");
+    assert!(md.contains("Creation Kit fragment") && md.contains("Example:"), "{md}");
+    assert_eq!(hover_at("BEGIN FRAGMENT Fragment_0", 3).unwrap().0, "BEGIN FRAGMENT");
+    assert_eq!(hover_at(";END FRAGMENT\n", 3).unwrap().0, "END FRAGMENT");
+    assert_eq!(hover_at("INDEX 1", 2).unwrap().0, "NEXT FRAGMENT INDEX");
+    // The text after the marker, other comments, outside of the fragment.
+    assert!(hover_at("Do not edit", 3).is_none());
+    assert!(hover_at("just a comment", 3).is_none());
+    assert!(hover_at("END CODE outside", 3).is_none());
+
+    let comments: Vec<&str> = semantic_tokens(&ws, file, None)
+        .into_iter()
+        .filter(|t| t.ty == TokenType::Comment)
+        .map(|t| src[t.range].trim_end())
+        .collect();
+    assert_eq!(comments, [";just a comment", ";END CODE outside"]);
+}
+
+#[test]
+fn assists_leave_fragments_alone() {
+    let fragment = ";BEGIN FRAGMENT CODE\nScriptName T\nFunction Fragment_0(Bool a, Bool b)\nIf !(a && b)\nEndIf\nEndFunction\n;END FRAGMENT CODE\n";
+    let src =
+        format!("{fragment}Function G(Bool a, Bool b)\n    If !(a && b)\n    EndIf\nEndFunction\n");
+    let mut ws = Workspace::new();
+    let file = ws.set_open(PathBuf::from("/ws/T.psc"), Arc::from(src.as_str()), 0);
+    let at = |from: usize| {
+        let start = src[from..].find("&&").unwrap() + from;
+        TextRange::empty(TextSize::new(start as u32))
+    };
+    let demorgan =
+        |range| assists::assists(&ws, file, range).iter().any(|a| a.id == "apply_demorgan");
+    assert!(!demorgan(at(0)));
+    assert!(demorgan(at(fragment.len())));
+}
+
+#[test]
 fn builtin_scripts_are_seen_by_tests_only() {
     let builtin = "ScriptName PapyrusAnalyzer\nFunction AssertTrue(Bool b) Global Native\n";
     let uses = |name: &str| {

@@ -19,6 +19,10 @@
 //! `; #[fmt::skip]` the next declaration or statement, `; #![fmt::skip]` the whole
 //! file. See [`papyrus_parser::attrs`].
 //!
+//! The fragments the Creation Kit generates, from `;BEGIN FRAGMENT CODE` to
+//! `;END FRAGMENT CODE`, are kept as written, blank lines included: it finds
+//! its code by these exact lines. Only the line breaks follow [`Newline`].
+//!
 //! Scripts with syntax errors are not formatted. The result is checked before
 //! being returned: it must parse without errors and contain the same
 //! significant tokens as the input.
@@ -310,7 +314,9 @@ pub fn format(text: &str, options: &FormatOptions) -> Result<String, FormatError
         return Ok(text.to_owned());
     }
     let skipped: Vec<TextRange> = attrs.iter().filter(|a| skip(a)).map(|a| a.target).collect();
-    let kept = kept_lines(&lines, &skipped);
+    let fragment = fragment_lines(root, &lines);
+    let mut kept = kept_lines(&lines, &skipped);
+    kept.iter_mut().zip(&fragment).for_each(|(k, f)| *k |= f);
     let levels = indent_levels(&lines);
     let mut out = String::with_capacity(text.len() + text.len() / 8);
     let mut pending_blank = 0usize;
@@ -319,7 +325,7 @@ pub fn format(text: &str, options: &FormatOptions) -> Result<String, FormatError
     let mut i = 0;
     while i < lines.len() {
         let line = &lines[i];
-        if line.is_blank() {
+        if line.is_blank() && !fragment[i] {
             pending_blank += 1;
             i += 1;
             continue;
@@ -384,6 +390,21 @@ fn kept_lines(lines: &[Line<'_>], skipped: &[TextRange]) -> Vec<bool> {
             })
         })
         .collect()
+}
+
+/// The lines of the fragments of the Creation Kit, the blank ones included.
+fn fragment_lines(root: papyrus_parser::SyntaxNode<'_>, lines: &[Line<'_>]) -> Vec<bool> {
+    let mut fragment = vec![false; lines.len()];
+    for range in papyrus_parser::attrs::fragments(root) {
+        let inside =
+            |l: &Line<'_>| l.first().is_some_and(|t| range.contains(t.text_range().start()));
+        if let (Some(first), Some(last)) =
+            (lines.iter().position(inside), lines.iter().rposition(inside))
+        {
+            fragment[first..=last].fill(true);
+        }
+    }
+    fragment
 }
 
 /// A line as written, but its line break.

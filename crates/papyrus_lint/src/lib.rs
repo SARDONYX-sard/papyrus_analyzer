@@ -238,6 +238,12 @@ pub fn ignore_fixes(
         }
         out.extend(ignore::attribute_fixes(&text, d));
     }
+    // Like the other assists: the fragments of the Creation Kit stay as they are.
+    let parse = papyrus_parser::parse(&text);
+    let fragments = papyrus_parser::attrs::fragments(parse.syntax_node());
+    out.retain(|a: &Assist| {
+        !a.edits.iter().any(|e| papyrus_parser::attrs::touches_fragment(&fragments, e.range))
+    });
     out
 }
 

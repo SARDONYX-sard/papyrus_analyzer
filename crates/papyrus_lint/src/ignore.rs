@@ -789,6 +789,41 @@ mod tests {
     }
 
     #[test]
+    fn fragments_are_not_fixed() {
+        let fragment = ";BEGIN FRAGMENT CODE\nScriptName T\nFunction Fragment_0(Bool b)\n;BEGIN CODE\nIf b == True\nEndIf\n;END CODE\nEndFunction\n;END FRAGMENT CODE\n";
+        let src =
+            format!("{fragment}Function G(Bool b)\n    If b == True\n    EndIf\nEndFunction\n");
+        let (mut ws, _) = workspace("ScriptName Other\n");
+        let file = ws.set_open("/ws/F.psc".into(), src.as_str().into(), 0);
+        let config = crate::LintConfig::default();
+
+        let at = |from: usize| {
+            let start = src[from..].find("b == True").unwrap() + from;
+            papyrus_ide::TextRange::at((start as u32).into(), 9.into())
+        };
+        let inside = at(0);
+        let outside = at(fragment.len());
+        let ids = |assists: Vec<papyrus_ide::assists::Assist>| {
+            assists.into_iter().map(|a| a.id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(crate::fixes(&ws, file, inside, &config)), Vec::<&str>::new());
+        assert!(!crate::fixes(&ws, file, outside, &config).is_empty());
+        // Above the fragment, the attribute of the file stays possible.
+        assert_eq!(ids(crate::ignore_fixes(&ws, file, inside, &config)), ["allow_lint_file"]);
+        assert_eq!(
+            ids(crate::ignore_fixes(&ws, file, outside, &config)),
+            ["allow_lint", "allow_lint_file"]
+        );
+
+        let (fixed, applied) = crate::fix_all(&mut ws, file, &config);
+        assert_eq!(applied, 1);
+        assert_eq!(
+            fixed,
+            format!("{fragment}Function G(Bool b)\n    If b\n    EndIf\nEndFunction\n")
+        );
+    }
+
+    #[test]
     fn misplaced_attributes_move_above() {
         let src = "ScriptName T\n; #![allow(all)] why\nFunction F()\n    Int a = 1  ; #[allow(unused_local)]\nEndFunction\n";
         let mut ws = papyrus_ide::Workspace::new();

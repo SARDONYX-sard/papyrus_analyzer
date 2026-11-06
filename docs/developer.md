@@ -50,12 +50,16 @@ Tests (`cargo test`):
 
 `tests/`:
 
-| Path                               | What                                                                                                                                                                                                                                                                                                   | Who changes it                      |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------- |
-| `tests/corpus`                     | scripts compiled by the official compiler (git submodule)                                                                                                                                                                                                                                              | read-only                           |
-| `tests/fmt`                        | `input.psc` → `expected.psc`, the formatter fixture                                                                                                                                                                                                                                                    | the tests                           |
-| `tests/playground`                 | a project (`papyrus.toml`, `src/`) to try the extension and the CLI on; `src/Base.psc` and `src/Child.psc` (compiler features, `Parent`), `src/Lints.psc` (each lint and the attributes, silenced by its first line), `tests/ChildTests.psc` (tests, mocks, events, watch expressions of the debugger) | anyone, any time — no test reads it |
-| `tests/playground/src/Scratch.psc` | an empty script to play with                                                                                                                                                                                                                                                                           | free to edit                        |
+| Path                                         | What                                                                             | Who changes it   |
+| -------------------------------------------- | -------------------------------------------------------------------------------- | ---------------- |
+| `tests/corpus`                               | scripts compiled by the official compiler (git submodule)                        | read-only        |
+| `tests/fmt`                                  | `input.psc` → `expected.psc`, the formatter fixture                              | the tests        |
+| `tests/playground`                           | a project (`papyrus.toml`) to try the extension and the CLI on; no test reads it | anyone, any time |
+| `tests/playground/src/Base.psc`, `Child.psc` | compiler features, `Parent`                                                      | anyone, any time |
+| `tests/playground/src/Lints.psc`             | each lint and the attributes, silenced by its first line                         | anyone, any time |
+| `tests/playground/src/Fragments.psc`         | a fragment of the Creation Kit: markers with hovers and colors, kept as written  | anyone, any time |
+| `tests/playground/src/Scratch.psc`           | an empty script to play with                                                     | free to edit     |
+| `tests/playground/tests/ChildTests.psc`      | tests, mocks, events, watch expressions of the debugger                          | anyone, any time |
 
 ## Building the extension
 
