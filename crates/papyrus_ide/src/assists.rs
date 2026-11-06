@@ -23,6 +23,7 @@ mod inline_script_variable;
 use papyrus_parser::{
     SyntaxKind, SyntaxNode, TextRange, TextSize,
     ast::{self, AstNode},
+    attrs::{fragments, touches_fragment},
 };
 
 use crate::{FileId, Workspace, features::with_sema, sema::Sema};
@@ -106,7 +107,9 @@ pub fn assists(ws: &Workspace, file: FileId, range: TextRange) -> Vec<Assist> {
     run_handlers(ws, file, range, HANDLERS)
 }
 
-/// Runs `handlers` at `range` of `file`; for assists of other crates.
+/// Runs `handlers` at `range` of `file`; for assists of other crates. Assists
+/// changing a fragment of the Creation Kit are left out, see
+/// [`papyrus_parser::attrs::fragments`].
 pub fn run_handlers(
     ws: &Workspace,
     file: FileId,
@@ -119,6 +122,8 @@ pub fn run_handlers(
         for handler in handlers {
             handler(&ctx, &mut acc);
         }
+        let fragments = fragments(sema.root);
+        acc.retain(|a| !a.edits.iter().any(|e| touches_fragment(&fragments, e.range)));
         acc
     })
     .unwrap_or_default()

@@ -81,6 +81,78 @@ pub fn misplaced<'a>(root: SyntaxNode<'a>) -> Vec<Misplaced<'a>> {
         .collect()
 }
 
+/// The comments the Creation Kit writes in its fragments, the longest first.
+const FRAGMENT_MARKERS: [&str; 12] = [
+    "BEGIN FRAGMENT CODE",
+    "END FRAGMENT CODE",
+    "NEXT FRAGMENT INDEX",
+    "BEGIN FRAGMENT",
+    "END FRAGMENT",
+    "BEGIN CODE",
+    "END CODE",
+    "BEGIN ALIAS PROPERTY",
+    "ALIAS PROPERTY TYPE",
+    "END ALIAS PROPERTY",
+    "BEGIN AUTOCAST TYPE",
+    "END AUTOCAST",
+];
+
+/// The marker of the Creation Kit a line comment starts with, as written:
+/// `BEGIN FRAGMENT` in `;BEGIN FRAGMENT Fragment_0`.
+pub fn fragment_marker(comment: &str) -> Option<&str> {
+    let body = comment.strip_prefix(';')?.trim_start();
+    FRAGMENT_MARKERS.iter().find_map(|marker| {
+        let word = body.get(..marker.len()).filter(|b| b.eq_ignore_ascii_case(marker))?;
+        let ends = !body[marker.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_');
+        ends.then_some(word)
+    })
+}
+
+/// The fragments the Creation Kit generates: from a comment alone on its line
+/// starting with `BEGIN FRAGMENT CODE` to its `END FRAGMENT CODE` (any case),
+/// or to the last token of the file without end. The Creation Kit finds its
+/// code by these lines: nothing may change them.
+pub fn fragments(root: SyntaxNode<'_>) -> Vec<TextRange> {
+    let is_marker = |text: &str, marker: &str| {
+        fragment_marker(text).is_some_and(|m| m.eq_ignore_ascii_case(marker))
+    };
+    let mut out = Vec::new();
+    let mut start = None;
+    let mut first_on_line = true;
+    let mut last_end = TextSize::new(0);
+    for tok in root.descendant_tokens() {
+        match tok.kind() {
+            SyntaxKind::NEWLINE | SyntaxKind::LINE_CONTINUATION => first_on_line = true,
+            SyntaxKind::WHITESPACE => {}
+            kind => {
+                let alone = first_on_line && kind == SyntaxKind::LINE_COMMENT;
+                first_on_line = false;
+                last_end = tok.text_range().end();
+                match start {
+                    None if alone && is_marker(tok.text(), "BEGIN FRAGMENT CODE") => {
+                        start = Some(tok.text_range().start());
+                    }
+                    Some(begin) if alone && is_marker(tok.text(), "END FRAGMENT CODE") => {
+                        out.push(TextRange::new(begin, last_end));
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if let Some(begin) = start {
+        out.push(TextRange::new(begin, last_end));
+    }
+    out
+}
+
+/// Whether an edit of `range` changes one of `fragments`. Text inserted right
+/// before or after a fragment does not.
+pub fn touches_fragment(fragments: &[TextRange], range: TextRange) -> bool {
+    fragments.iter().any(|f| range.start() < f.end() && f.start() < range.end())
+}
+
 /// The attribute comments of a file, with where they are.
 fn scan(root: SyntaxNode<'_>) -> Vec<(SyntaxToken<'_>, Result<(), Misplacement>)> {
     let text = root.text();
@@ -199,6 +271,35 @@ mod tests {
         let parse = crate::parse(src);
         let f = &attributes(parse.syntax_node())[1];
         assert!(src[f.target].ends_with("EndFunction"));
+    }
+
+    #[test]
+    fn fragments_and_edits_touching_them() {
+        let found = |src: &str| {
+            let parse = crate::parse(src);
+            let ranges = fragments(parse.syntax_node());
+            ranges.iter().map(|r| src[*r].to_owned()).collect::<Vec<_>>()
+        };
+        let src = "; before\n;BEGIN FRAGMENT CODE - x\nScriptName T\n\n;BEGIN FRAGMENT Fragment_0\n;END FRAGMENT\n;end fragment code - y\nInt x\n";
+        assert_eq!(
+            found(src),
+            [
+                ";BEGIN FRAGMENT CODE - x\nScriptName T\n\n;BEGIN FRAGMENT Fragment_0\n;END FRAGMENT\n;end fragment code - y"
+            ]
+        );
+        // Without end: until the last token. After code, or a stray end: nothing.
+        assert_eq!(
+            found(";BEGIN FRAGMENT CODE\nScriptName T\n\n\n"),
+            [";BEGIN FRAGMENT CODE\nScriptName T"]
+        );
+        assert!(
+            found("ScriptName T ; BEGIN FRAGMENT CODE\nInt x\n;END FRAGMENT CODE\n").is_empty()
+        );
+
+        let f = [TextRange::new(TextSize::new(10), TextSize::new(20))];
+        let edit = |a: u32, b: u32| touches_fragment(&f, TextRange::new(a.into(), b.into()));
+        assert!(edit(15, 15) && edit(5, 11) && edit(19, 25) && edit(0, 30));
+        assert!(!edit(10, 10) && !edit(20, 20) && !edit(0, 10) && !edit(20, 30));
     }
 
     #[test]

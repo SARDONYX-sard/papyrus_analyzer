@@ -113,6 +113,7 @@ pub fn semantic_tokens(
 ) -> Vec<SemanticToken> {
     with_sema(ws, file, |sema| {
         let mut out = Vec::new();
+        let fragments = papyrus_parser::attrs::fragments(sema.root);
         for tok in sema.root.descendant_tokens() {
             if range.is_some_and(|r| r.intersect(tok.text_range()).is_none()) {
                 continue;
@@ -122,6 +123,14 @@ pub fn semantic_tokens(
                 // Attributes (`; #[allow(...)]`) keep the colors of the grammar,
                 // which themes give Rust attributes (`meta.attribute.rust`).
                 SyntaxKind::LINE_COMMENT if is_attribute(tok.text()) => continue,
+                // So do the markers of the Creation Kit, in its fragments only:
+                // elsewhere, `; END CODE` is a comment like any other.
+                SyntaxKind::LINE_COMMENT
+                    if papyrus_parser::attrs::fragment_marker(tok.text()).is_some()
+                        && fragments.iter().any(|f| f.contains(tok.text_range().start())) =>
+                {
+                    continue;
+                }
                 SyntaxKind::LINE_COMMENT | SyntaxKind::BLOCK_COMMENT => (TokenType::Comment, 0),
                 SyntaxKind::DOC_COMMENT => {
                     (TokenType::Comment, TokenModifier::Documentation as u32)

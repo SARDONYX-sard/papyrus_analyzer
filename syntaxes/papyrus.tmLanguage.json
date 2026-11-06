@@ -122,6 +122,21 @@
           }
         },
         {
+          "comment": "The markers of the fragments of the Creation Kit, colored like attributes. The language server gives the same text outside of a fragment the color of a comment.",
+          "match": "(?i)(;)(\\s*(?:BEGIN FRAGMENT CODE|END FRAGMENT CODE|NEXT FRAGMENT INDEX|BEGIN FRAGMENT|END FRAGMENT|BEGIN CODE|END CODE|BEGIN ALIAS PROPERTY|ALIAS PROPERTY TYPE|END ALIAS PROPERTY|BEGIN AUTOCAST TYPE|END AUTOCAST)\\b)(.*)$",
+          "captures": {
+            "1": {
+              "name": "comment.line.semicolon.papyrus punctuation.definition.comment.papyrus"
+            },
+            "2": {
+              "name": "meta.attribute.rust.papyrus"
+            },
+            "3": {
+              "name": "comment.line.semicolon.papyrus"
+            }
+          }
+        },
+        {
           "name": "comment.line.semicolon.papyrus",
           "match": ";.*$"
         }

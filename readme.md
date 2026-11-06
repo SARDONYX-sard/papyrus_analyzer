@@ -25,7 +25,7 @@ Language server:
 | Code actions | quick fixes (check None, allow a lint) · De Morgan · inline variable                                         |
 | Display      | semantic tokens · folding · symbols · formatting · `▶ Run Test` \| `⚙ Debug` code lenses                     |
 
-Imported scripts (game sources, `[build] imports`) are read only: never formatted, renamed or fixed.
+Imported scripts (game sources, `[build] imports`) are read only: never formatted, renamed or fixed. The fragments of the Creation Kit (`;BEGIN FRAGMENT CODE` to `;END FRAGMENT CODE`) are never formatted or changed by a code action or `lint --fix`.
 
 ## Quick start
 
