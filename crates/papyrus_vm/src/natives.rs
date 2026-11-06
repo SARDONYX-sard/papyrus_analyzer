@@ -61,20 +61,28 @@ Assertions of `papyrus_analyzer test`: a failure fails the test.
 
 Function AssertIntEq(Int aiActual, Int aiExpected, String asMessage = "") Global Native
 {Fails unless aiActual == aiExpected.}
+
 Function AssertFloatEq(Float afActual, Float afExpected, Float afEpsilon = 0.0001, String asMessage = "") Global Native
 {Fails unless afActual is within afEpsilon of afExpected.}
+
 Function AssertStringEq(String asActual, String asExpected, String asMessage = "") Global Native
 {Fails unless asActual == asExpected (ignoring case, like Papyrus).}
+
 Function AssertBoolEq(Bool abActual, Bool abExpected, String asMessage = "") Global Native
 {Fails unless abActual == abExpected.}
+
 Function AssertTrue(Bool abValue, String asMessage = "") Global Native
 {Fails unless abValue is True.}
+
 Function AssertFalse(Bool abValue, String asMessage = "") Global Native
 {Fails unless abValue is False.}
+
 Function AssertNone(Form akForm, String asMessage = "") Global Native
 {Fails unless akForm is None.}
+
 Function AssertNotNone(Form akForm, String asMessage = "") Global Native
 {Fails when akForm is None.}
+
 Function Fail(String asMessage) Global Native
 {Fails the test.}
 "#;
