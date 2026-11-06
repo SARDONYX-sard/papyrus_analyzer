@@ -278,6 +278,7 @@ fn nullness_line(sema: &Sema<'_>, range: TextRange) -> Option<String> {
     let text = |r: TextRange| &sema.text[usize::from(r.start())..usize::from(r.end())];
     let (at, why) = match flow.uses.get(&crate::hir::ExprId(i as u32))? {
         Nullness::NotNone => return Some(format!("`{name}` is not None here.")),
+        Nullness::IsSelf => return Some(format!("`{name}` holds `Self` here: it is not None.")),
         Nullness::MaybeNone(NoneSource::Cast(at)) => {
             (*at, format!("the cast `{}` gives None when it fails", text(*at)))
         }

@@ -166,6 +166,46 @@ mod tests {
     }
 
     #[test]
+    fn self_cast_back_cannot_fail() {
+        let quiet = [
+            // What the Creation Kit generates.
+            "    ObjectReference t = self as ObjectReference\n    T k = t as T\n    k.Disable()\n",
+            // Without the first cast, and directly.
+            "    ObjectReference t = self\n    T k = t as T\n    k.Disable()\n",
+            "    ((self as ObjectReference) as T).Disable()\n",
+            // `Self` on every path, checked or not.
+            "    ObjectReference t = self\n    If b\n        t = self\n    Else\n        t = self as ObjectReference\n    EndIf\n    If t\n        (t as T).Disable()\n    EndIf\n    (t as T).Disable()\n",
+            // Assigned before the loop only.
+            "    ObjectReference t = self\n    While b\n        (t as T).Disable()\n    EndWhile\n",
+        ];
+        for body in quiet {
+            assert_eq!(check("unchecked-cast", body), Vec::<String>::new(), "{body}");
+        }
+        let cases = [
+            // Another value.
+            ("    T k = r as T\n    k.Disable()\n", "4: k"),
+            // Assigned again, on one path, or in the loop.
+            (
+                "    ObjectReference t = self\n    t = r\n    T k = t as T\n    k.Disable()\n",
+                "6: k",
+            ),
+            (
+                "    ObjectReference t = self\n    If b\n        t = r\n    EndIf\n    T k = t as T\n    k.Disable()\n",
+                "8: k",
+            ),
+            (
+                "    ObjectReference t = self\n    While b\n        T k = t as T\n        k.Disable()\n        t = r\n    EndWhile\n",
+                "6: k",
+            ),
+            // `Self` may not be a script extending this one.
+            ("    ObjectReference t = self\n    Actor a = t as Actor\n    a.Kill()\n", "5: a"),
+        ];
+        for (body, expected) in cases {
+            assert_eq!(check("unchecked-cast", body), [expected], "{body}");
+        }
+    }
+
+    #[test]
     fn unchecked_call_results() {
         let body = "    ObjectReference x = GetLinkedRef()\n    x.Disable()\n    r.GetLinkedRef().Disable()\n";
         assert_eq!(check("unchecked-call-result", body), ["4: x", "5: r.GetLinkedRef()"]);

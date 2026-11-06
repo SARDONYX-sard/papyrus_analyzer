@@ -11,6 +11,14 @@
 //! EndIf
 //! ```
 //!
+//! A local holding `Self` is followed too: casting it back to the script or to
+//! a parent never fails, as in the code the Creation Kit generates:
+//!
+//! ```papyrus
+//! Quest __temp = self as Quest
+//! MyQuest kmyQuest = __temp as MyQuest    ; not None
+//! ```
+//!
 //! [`analyze`] gives the state of every use of a local, for hovers, and the
 //! receivers that may be `None`, for the lints `unchecked-cast` and
 //! `unchecked-call-result`.
@@ -20,7 +28,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     TextRange,
     hir::{BinaryOp, Body, Expr, ExprId, Literal, LocalId, Stmt, StmtId, UnaryOp},
-    index::{MemberKind, TypeRef},
+    index::{BaseType, MemberKind, TypeRef},
     sema::{Def, Sema},
     typeck::{Ty, TypeckResult},
 };
@@ -41,6 +49,8 @@ pub enum Nullness {
     MaybeNone(NoneSource),
     /// A condition rules `None` out.
     NotNone,
+    /// It holds `Self`, so it is not `None`.
+    IsSelf,
 }
 
 /// A value that may be `None` used as a receiver.
@@ -120,7 +130,9 @@ struct Flow<'a, 's> {
 fn with_not_none(state: &State, locals: &FxHashSet<LocalId>) -> State {
     let mut out = state.clone();
     for &l in locals {
-        out.insert(l, Nullness::NotNone);
+        if out.get(&l) != Some(&Nullness::IsSelf) {
+            out.insert(l, Nullness::NotNone);
+        }
     }
     out
 }
@@ -138,7 +150,11 @@ fn merge(paths: Vec<State>) -> Option<State> {
                 (_, Some(n @ Nullness::MaybeNone(_))) => {
                     out.insert(l, n);
                 }
-                (Some(Nullness::NotNone), Some(Nullness::NotNone)) => {}
+                (Some(a), Some(b)) if a == b => {}
+                // Not `None` on both paths, but `Self` on one only.
+                (Some(_), Some(_)) => {
+                    out.insert(l, Nullness::NotNone);
+                }
                 _ => {
                     out.remove(&l);
                 }
@@ -191,6 +207,11 @@ impl Flow<'_, '_> {
                     state = merge(ends.into_iter().flatten().collect())?;
                 }
                 Stmt::While { condition, body } => {
+                    // Assigned in the loop: not `Self` anymore from the second
+                    // round on, which is not followed.
+                    let mut assigned = FxHashSet::default();
+                    self.assigned_locals(&body, &mut assigned);
+                    state.retain(|l, n| *n != Nullness::IsSelf || !assigned.contains(l));
                     self.expr(condition, &state);
                     let (when_true, when_false) = self.facts(condition);
                     let end = self.block(&body, with_not_none(&state, &when_true));
@@ -203,6 +224,29 @@ impl Flow<'_, '_> {
             }
         }
         Some(state)
+    }
+
+    /// The locals `stmts` assign, in nested blocks too.
+    fn assigned_locals(&self, stmts: &[StmtId], out: &mut FxHashSet<LocalId>) {
+        for &s in stmts {
+            match self.body.stmt(s) {
+                Stmt::Assign { target, .. } => {
+                    if let Expr::Local(l) = *self.body.expr(*target) {
+                        out.insert(l);
+                    }
+                }
+                Stmt::If { branches, else_branch } => {
+                    for (_, stmts) in branches {
+                        self.assigned_locals(stmts, out);
+                    }
+                    if let Some(stmts) = else_branch {
+                        self.assigned_locals(stmts, out);
+                    }
+                }
+                Stmt::While { body, .. } => self.assigned_locals(body, out),
+                Stmt::Local { .. } | Stmt::Expr(_) | Stmt::Return(_) => {}
+            }
+        }
     }
 
     fn assign(&mut self, local: LocalId, value: Option<ExprId>, state: &mut State) {
@@ -281,7 +325,11 @@ impl Flow<'_, '_> {
         let range = self.body.expr_range(e);
         match *self.body.expr(e) {
             Expr::Local(local) => state.get(&local).copied(),
+            Expr::SelfRef => Some(Nullness::IsSelf),
             Expr::Cast { expr, ty: Some(ty) } => {
+                if self.nullness(expr, state) == Some(Nullness::IsSelf) && self.is_own_type(ty) {
+                    return Some(Nullness::IsSelf);
+                }
                 let from = self.ty(expr)?;
                 match cast_kind(self.sema, from, ty)? {
                     CastKind::Upcast => None,
@@ -298,6 +346,12 @@ impl Flow<'_, '_> {
             }
             _ => None,
         }
+    }
+
+    /// Whether `Self` is always a `ty`: the script or one it extends.
+    fn is_own_type(&self, ty: TypeRef) -> bool {
+        let script = self.sema.script_name().map(|s| TypeRef::scalar(BaseType::Object(s)));
+        script.is_some_and(|s| cast_kind(self.sema, s, ty) == Some(CastKind::Upcast))
     }
 
     fn ty(&self, e: ExprId) -> Option<TypeRef> {
