@@ -20,7 +20,14 @@ usage: papyrus_analyzer lint [OPTIONS] [PATH]...
   PATH            scripts, or directories searched recursively (default: .)
 
 options:
-  --fix           apply the automatic fixes and rewrite the files
+  --fix           apply the automatic fixes and rewrite the files. Like
+                  `cargo fix`, it refuses scripts with uncommitted changes,
+                  and to run without a git repository:
+    --allow-dirty         fix scripts with changes not staged, or untracked
+    --allow-staged        fix scripts with staged changes
+    --allow-no-vcs        fix without a git repository
+    --allow-manual-fixes  also apply the fixes that are guesses (`unknown-state`),
+                          when there is one candidate only
   -A, --allow NAME   silence a lint, a group or `all`
   -W, --warn NAME    report as a warning
   -D, --deny NAME    report as an error; `-D warnings` turns every warning
@@ -35,7 +42,8 @@ exit code: 1 when an error (a denied lint) is reported, else 0.
 examples:
   papyrus_analyzer lint Scripts\\Source
   papyrus_analyzer lint -D warnings -A style
-  papyrus_analyzer lint --fix Scripts\\Source\\MyQuest.psc";
+  papyrus_analyzer lint --fix Scripts\\Source\\MyQuest.psc
+  papyrus_analyzer lint --fix --allow-dirty --allow-staged";
 
 /// Runs the subcommand and returns the process exit code.
 pub(crate) fn run(args: &[String]) -> i32 {
@@ -56,6 +64,8 @@ pub(crate) fn run(args: &[String]) -> i32 {
         None => LintConfig::default(),
     };
     let mut fix = false;
+    let mut manual_fixes = false;
+    let mut vcs = VcsOptions::default();
     let mut list = false;
     let mut paths = Vec::new();
     let mut it = args.iter();
@@ -66,6 +76,22 @@ pub(crate) fn run(args: &[String]) -> i32 {
             "-D" | "--deny" => Some(Level::Deny),
             "--fix" => {
                 fix = true;
+                None
+            }
+            "--allow-manual-fixes" => {
+                manual_fixes = true;
+                None
+            }
+            "--allow-dirty" => {
+                vcs.allow_dirty = true;
+                None
+            }
+            "--allow-staged" => {
+                vcs.allow_staged = true;
+                None
+            }
+            "--allow-no-vcs" => {
+                vcs.allow_no_vcs = true;
                 None
             }
             "--list" => {
@@ -113,18 +139,27 @@ pub(crate) fn run(args: &[String]) -> i32 {
     if paths.is_empty() {
         paths.push(PathBuf::from("."));
     }
+    if fix && let Err(message) = check_vcs(&paths, vcs) {
+        eprintln!("{message}");
+        return 2;
+    }
     let mut scripts = Vec::new();
     for path in &paths {
         collect(path, &mut scripts);
     }
 
     // The scripts they use, for the lints that need types (`unchecked-cast`).
-    let base = crate::fmt::workspace(&scripts);
+    let mut base = crate::fmt::workspace(&scripts);
+    // The other scripts of the project, for what depends on the scripts
+    // extending these ones: the states of `unknown-state`.
+    if let Some(m) = &manifest {
+        index_project(&mut base, m);
+    }
     // Files are independent (lints look at one script): each gets its own
     // copy of the workspace, in parallel; reports keep the order of the files.
     use rayon::prelude::*;
     let reports: Vec<FileReport> =
-        scripts.par_iter().map(|p| lint_file(p, &config, fix, &base)).collect();
+        scripts.par_iter().map(|p| lint_file(p, &config, fix, manual_fixes, &base)).collect();
     let (mut warnings, mut errors, mut fixed, mut fixed_files) = (0, 0, 0, 0);
     for report in reports {
         for line in &report.notes {
@@ -149,6 +184,84 @@ pub(crate) fn run(args: &[String]) -> i32 {
     i32::from(errors > 0)
 }
 
+/// What `--fix` accepts to overwrite, like `cargo fix`.
+#[derive(Clone, Copy, Default)]
+struct VcsOptions {
+    allow_dirty: bool,
+    allow_staged: bool,
+    allow_no_vcs: bool,
+}
+
+/// `--fix` overwrites scripts: they must be safe in git, to look at and undo
+/// its changes.
+fn check_vcs(paths: &[PathBuf], options: VcsOptions) -> Result<(), String> {
+    // From the current directory on purpose: `paths` are relative to it.
+    #[allow(clippy::disallowed_methods)]
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "-z", "--"])
+        .args(paths)
+        .output()
+        .ok()
+        .filter(|o| o.status.success());
+    let Some(output) = output else {
+        return if options.allow_no_vcs {
+            Ok(())
+        } else {
+            Err("no git repository found: --fix could not be undone. Pass --allow-no-vcs to fix anyway.".to_owned())
+        };
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let (mut dirty, mut staged) = (Vec::new(), Vec::new());
+    let mut entries = text.split('\0');
+    while let Some(entry) = entries.next() {
+        let (Some(status), Some(path)) = (entry.get(..2), entry.get(3..)) else { continue };
+        // A rename or copy: the old path follows.
+        if status.starts_with(['R', 'C']) {
+            entries.next();
+        }
+        if !path.to_ascii_lowercase().ends_with(".psc") {
+            continue;
+        }
+        let in_tree = status.as_bytes()[1];
+        if in_tree != b' ' {
+            dirty.push(path);
+        } else {
+            staged.push(path);
+        }
+    }
+    let mut lines = Vec::new();
+    if !options.allow_dirty {
+        lines.extend(dirty.iter().map(|p| format!("  {p} (dirty)")));
+    }
+    if !options.allow_staged {
+        lines.extend(staged.iter().map(|p| format!("  {p} (staged)")));
+    }
+    if lines.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "these scripts have uncommitted changes, which --fix would mix with its own:\n{}\ncommit them, or pass --allow-dirty and --allow-staged to fix anyway.",
+        lines.join("\n")
+    ))
+}
+
+/// Adds the sources of the projects of `manifest` to `ws`.
+fn index_project(ws: &mut Workspace, manifest: &Path) {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let vars = papyrus_project::Variables::for_command_line(&cwd);
+    let Ok(project) = papyrus_project::load_workspace(manifest, &vars) else { return };
+    let mut scripts = Vec::new();
+    for dir in project.members.iter().flat_map(|m| m.sources.iter().chain(&m.test_sources)) {
+        collect(dir, &mut scripts);
+    }
+    for path in scripts {
+        if let Some(text) = papyrus_ide::read_file(&path) {
+            let index = papyrus_ide::index_text(&text);
+            ws.set_disk_index(path, index, papyrus_ide::Origin::Workspace);
+        }
+    }
+}
+
 /// What linting one file gives.
 #[derive(Default)]
 struct FileReport {
@@ -160,7 +273,13 @@ struct FileReport {
     fixed: usize,
 }
 
-fn lint_file(path: &Path, config: &LintConfig, fix: bool, base: &Workspace) -> FileReport {
+fn lint_file(
+    path: &Path,
+    config: &LintConfig,
+    fix: bool,
+    manual_fixes: bool,
+    base: &Workspace,
+) -> FileReport {
     let mut report = FileReport::default();
     let Some(text) = papyrus_ide::read_file(path) else { return report };
     let mut ws = base.clone();
@@ -174,7 +293,7 @@ fn lint_file(path: &Path, config: &LintConfig, fix: bool, base: &Workspace) -> F
         report.notes.push(format!("{}: not fixed: not UTF-8", path.display()));
     }
     if fix && utf8 {
-        let (new, applied) = papyrus_lint::fix_all(&mut ws, file, config);
+        let (new, applied) = papyrus_lint::fix_all(&mut ws, file, config, manual_fixes);
         if applied > 0 {
             let mut out = Vec::with_capacity(new.len() + 3);
             if bom {

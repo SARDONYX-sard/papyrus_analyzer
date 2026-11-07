@@ -25,6 +25,7 @@ pub(crate) const LINT: Lint = Lint {
     summary: "statements after a `Return`",
     run,
     fix: None,
+    manual_fix: false,
 };
 
 fn run(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {

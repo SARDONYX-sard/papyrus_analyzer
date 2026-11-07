@@ -337,6 +337,198 @@ fn fragment_markers_have_hovers_and_grammar_colors() {
 }
 
 #[test]
+fn states_in_strings_complete_and_go_to_their_declaration() {
+    let base = "ScriptName Base\nState Busy\nEndState\n";
+    let child = "ScriptName Child extends Base\nState Idle\nEndState\n";
+    let grandchild = "ScriptName Grandchild extends Child\nState Late\nEndState\n";
+    let other = "ScriptName Other\nState Elsewhere\nEndState\n";
+    let open = |src: &str| {
+        let (mut ws, _, offset) = workspace(&[("Child.psc", src)]);
+        ws.set_open(PathBuf::from("/ws/Base.psc"), Arc::from(base), 0);
+        ws.set_open(PathBuf::from("/ws/Grandchild.psc"), Arc::from(grandchild), 0);
+        ws.set_open(PathBuf::from("/ws/Other.psc"), Arc::from(other), 0);
+        let file = ws.file_id(Path::new("/ws/Child.psc")).unwrap();
+        (ws, file, offset)
+    };
+
+    // Own and parent states first, then those of children; not of the others.
+    let body = |call: &str| format!("{child}Function F()\n    {call}\nEndFunction\n");
+    for call in ["GoToState(\"B$0\")", "GoToState(\"$0\")", "GoToState(\"B$0"] {
+        let (ws, file, offset) = open(&body(call));
+        let got = completions(&ws, file, offset);
+        let mut items: Vec<_> = got.items.iter().collect();
+        items.sort_by_key(|i| i.sort_text.clone());
+        let found: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(found, ["Busy", "Idle", "Late"], "{call}");
+        assert!(items.iter().all(|i| i.kind == CompletionKind::State));
+        assert_eq!(items[0].detail.as_deref(), Some("State Busy (Base)"));
+    }
+    // Other strings: nothing.
+    for call in ["Debug.Trace(\"B$0\")", "Debug.Trace(\"B$0"] {
+        let (ws, file, offset) = open(&body(call));
+        assert!(completions(&ws, file, offset).items.is_empty(), "{call}");
+    }
+
+    // The name is replaced as a whole.
+    let (ws, file, offset) = open(&body("GoToState(\"Bu$0sy\")"));
+    let item = completions(&ws, file, offset).items.into_iter().next().unwrap();
+    let text = ws.text(file).unwrap();
+    assert_eq!(&text[item.replace_range], "Busy");
+
+    // In the parent, in the script, in a child, any case; none for other strings.
+    let goto = |call: &str| {
+        let (ws, file, offset) = open(&body(call));
+        let targets = goto_definition(&ws, file, offset);
+        let names: Vec<String> = targets
+            .iter()
+            .map(|t| {
+                let NavFile::Script(f) = t.file else { panic!("not a script") };
+                ws.text(f).unwrap()[t.focus_range].to_owned()
+            })
+            .collect();
+        names
+    };
+    assert_eq!(goto("GoToState(\"Bu$0sy\")"), ["Busy"]);
+    assert_eq!(goto("GoToState(\"$0idle\")"), ["Idle"]);
+    assert_eq!(goto("GoToState(\"Late$0\")"), ["Late"]);
+    assert_eq!(goto("GoToState(\"Nope$0\")"), Vec::<String>::new());
+    assert_eq!(goto("Debug.Trace(\"Bu$0sy\")"), Vec::<String>::new());
+}
+
+#[test]
+fn states_in_strings_are_references() {
+    let base = "ScriptName Base\nState Busy\nEndState\nFunction F(Base akOther)\n    GoToState(\"Busy\")\n    If akOther.GetState() != \"busy\"\n    EndIf\n    Debug.Trace(\"Busy\")\nEndFunction\n";
+    let child = "ScriptName Child extends Base\nState Busy\nEndState\nFunction G()\n    GoToState(\"$0Busy\")\nEndFunction\n";
+    let other = "ScriptName Other\nState Busy\nEndState\nFunction H()\n    GoToState(\"Busy\")\nEndFunction\n";
+    let (mut ws, file, offset) = workspace(&[("Child.psc", child)]);
+    let base_id = ws.set_open(PathBuf::from("/ws/Base.psc"), Arc::from(base), 0);
+    let other_id = ws.set_open(PathBuf::from("/ws/Other.psc"), Arc::from(other), 0);
+
+    // Hover: the state.
+    let h = hover(&ws, file, offset).unwrap();
+    assert!(h.markdown.contains("State Busy"), "{}", h.markdown);
+
+    // References of the state of Child: its declaration and the strings of Base
+    // and Child, spelled as written; neither `Debug.Trace("Busy")` nor the state
+    // of Other.
+    let spell = |f: NavFile, r: TextRange| {
+        let NavFile::Script(f) = f else { panic!("not a script") };
+        assert_ne!(f, other_id, "the state of another script");
+        ws.text(f).unwrap()[r].to_owned()
+    };
+    let found = references(&ws, file, offset, true);
+    let mut names: Vec<String> = found.iter().map(|&(f, r)| spell(f, r)).collect();
+    names.sort();
+    assert_eq!(names, ["Busy", "Busy", "Busy", "busy"], "{found:?}");
+    let in_base = found.iter().filter(|(f, _)| *f == NavFile::Script(base_id)).count();
+    assert_eq!(in_base, 2, "{found:?}");
+    // From the declaration too.
+    let decl = TextSize::new(base.find("Busy").unwrap() as u32);
+    let from_decl = references(&ws, base_id, decl, true);
+    assert_eq!(from_decl.len(), 4, "{from_decl:?}");
+
+    // Rename: both declarations too, between the quotes, from a string or a
+    // declaration.
+    assert_eq!(prepare_rename(&ws, file, offset).unwrap().1, "Busy");
+    let edit = rename(&ws, file, offset, "Working").unwrap();
+    assert_eq!(edit.ranges.len(), 5, "{:?}", edit.ranges);
+    let apply = |src: &str, id: FileId, edit: &RenameEdit| {
+        let mut out = src.replace("$0", "");
+        let mut ranges: Vec<TextRange> = edit
+            .ranges
+            .iter()
+            .filter(|(f, _)| *f == NavFile::Script(id))
+            .map(|&(_, r)| r)
+            .collect();
+        ranges.sort_by_key(|r| std::cmp::Reverse(r.start()));
+        for r in ranges {
+            out.replace_range(usize::from(r.start())..usize::from(r.end()), "Working");
+        }
+        out
+    };
+    assert_eq!(
+        apply(base, base_id, &edit),
+        "ScriptName Base\nState Working\nEndState\nFunction F(Base akOther)\n    GoToState(\"Working\")\n    If akOther.GetState() != \"Working\"\n    EndIf\n    Debug.Trace(\"Busy\")\nEndFunction\n"
+    );
+    assert_eq!(
+        apply(child, file, &edit),
+        "ScriptName Child extends Base\nState Working\nEndState\nFunction G()\n    GoToState(\"Working\")\nEndFunction\n"
+    );
+    assert_eq!(rename(&ws, base_id, decl, "Working").unwrap().ranges.len(), 5);
+
+    // A name declared nowhere, and other strings: nothing to rename.
+    let (ws, file, offset) = workspace(&[(
+        "T.psc",
+        "ScriptName T\nFunction F()\n    GoToState(\"$0Nope\")\nEndFunction\n",
+    )]);
+    assert!(prepare_rename(&ws, file, offset).is_err());
+    let (ws, file, offset) = workspace(&[(
+        "T.psc",
+        "ScriptName T\nFunction F()\n    Debug.Trace(\"$0Nope\")\nEndFunction\n",
+    )]);
+    assert!(prepare_rename(&ws, file, offset).is_err());
+}
+
+#[test]
+fn states_of_other_objects_stop_at_their_type() {
+    // `Mine` and `Theirs` only share a parent; `Theirs` names a state on an object
+    // of that type, whatever its script is at run time.
+    let base = "ScriptName ObjectReference\n";
+    let mine = "ScriptName Mine extends ObjectReference\nState Wai$0ting\nEndState\nFunction F()\n    GoToState(\"Waiting\")\n    Self.GoToState(\"Waiting\")\nEndFunction\n";
+    let theirs = "ScriptName Theirs extends ObjectReference\nFunction G(ObjectReference akRef, Mine akMine)\n    akRef.GoToState(\"Waiting\")\n    If akRef.GetState() == \"Waiting\"\n    EndIf\n    akMine.GoToState(\"Waiting\")\nEndFunction\n";
+    let (mut ws, file, offset) = workspace(&[("Mine.psc", mine)]);
+    ws.set_open(PathBuf::from("/ws/ObjectReference.psc"), Arc::from(base), 0);
+    let theirs_id = ws.set_open(PathBuf::from("/ws/Theirs.psc"), Arc::from(theirs), 0);
+
+    let found = references(&ws, file, offset, true);
+    let lines: Vec<&str> = found
+        .iter()
+        .map(|&(f, _)| {
+            let NavFile::Script(id) = f else { panic!("not a script") };
+            if id == theirs_id { "theirs" } else { "mine" }
+        })
+        .collect();
+    // The declaration and two strings; `akMine` of the other script, typed `Mine`.
+    assert_eq!(lines, ["mine", "mine", "mine", "theirs"], "{found:?}");
+    let renamed = rename(&ws, file, offset, "Paused").unwrap();
+    assert_eq!(renamed.ranges.len(), 4, "{:?}", renamed.ranges);
+
+    // From `akRef`: nothing to go to, nor to propose but the states of its type.
+    let at =
+        |needle: &str, delta: usize| TextSize::new((theirs.find(needle).unwrap() + delta) as u32);
+    let on_ref = at("akRef.GoToState(\"Waiting", 18);
+    assert!(goto_definition(&ws, theirs_id, on_ref).is_empty());
+    assert!(completions(&ws, theirs_id, on_ref).items.is_empty());
+    assert_eq!(goto_definition(&ws, theirs_id, at("akMine.GoToState(\"Waiting", 20)).len(), 1);
+}
+
+#[test]
+fn states_compared_with_get_state_complete_and_go_to_their_declaration() {
+    let decl = "ScriptName T\nState Busy\nEndState\n";
+    for (call, label) in [
+        ("If GetState() == \"B$0\"\n    EndIf", Some("Busy")),
+        ("If GetState() == \"B$0", Some("Busy")),
+        ("If \"$0\" != GetState()\n    EndIf", Some("Busy")),
+        ("If Foo() == \"B$0\"\n    EndIf", None),
+    ] {
+        let src = format!("{decl}Function F()\n    {call}\nEndFunction\n");
+        let (ws, file, offset) = workspace(&[("T.psc", &src)]);
+        let got = completions(&ws, file, offset);
+        let found: Vec<&str> = got.items.iter().map(|i| i.label.as_str()).collect();
+        match label {
+            Some(label) => assert_eq!(found, [label], "{call}"),
+            None => assert!(found.is_empty(), "{call}: {found:?}"),
+        }
+    }
+    let src =
+        format!("{decl}Function F()\n    If GetState() == \"Bu$0sy\"\n    EndIf\nEndFunction\n");
+    let (ws, file, offset) = workspace(&[("T.psc", &src)]);
+    let targets = goto_definition(&ws, file, offset);
+    assert_eq!(targets.len(), 1);
+    assert_eq!(&ws.text(file).unwrap()[targets[0].focus_range], "Busy");
+}
+
+#[test]
 fn assists_leave_fragments_alone() {
     let fragment = ";BEGIN FRAGMENT CODE\nScriptName T\nFunction Fragment_0(Bool a, Bool b)\nIf !(a && b)\nEndIf\nEndFunction\n;END FRAGMENT CODE\n";
     let src =

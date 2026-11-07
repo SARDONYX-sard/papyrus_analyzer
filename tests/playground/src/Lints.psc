@@ -15,6 +15,26 @@ Function IndexOutOfBounds()
     Debug.Trace(last)
 EndFunction
 
+; unknown-state (suspicious): GoToState with a state declared nowhere. Quick fix:
+; the closest name. Inside the quotes: completion of the states, go to definition.
+Function UnknownState()
+    GoToState("Waitng")  ; warning: did you mean `Waiting`?
+    GoToState("Waiting") ; fine; go to definition
+    GoToState("")        ; fine: the empty state
+    GoToState("Ready")   ; fine: a flag, compared with GetState() below
+    If GetState() == "Ready"
+        Debug.Trace("ready")
+    EndIf
+    If GetState() == "Waitng" ; warning too; `"Waiting"` below: hover, references, rename
+        Debug.Trace("waiting")
+    ElseIf GetState() == "Waiting"
+        Debug.Trace("waiting")
+    EndIf
+EndFunction
+
+State Waiting
+EndState
+
 ; unused-local (suspicious): a local variable whose value is never read.
 ; Quick fix: remove it. Denied by `unused-local = "deny"` in this papyrus.toml.
 Function UnusedLocal()

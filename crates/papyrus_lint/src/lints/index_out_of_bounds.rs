@@ -31,6 +31,7 @@ pub(crate) const LINT: Lint = Lint {
     summary: "a constant index outside of an array of known length",
     run,
     fix: None,
+    manual_fix: false,
 };
 
 fn run(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {

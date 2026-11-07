@@ -114,11 +114,15 @@ pub struct Lint {
     run: fn(&Sema<'_>, &mut Vec<Diagnostic>),
     /// The automatic fix.
     fix: Option<Handler>,
+    /// The fix is a guess: `lint --fix` applies it only with
+    /// `--allow-manual-fixes`.
+    manual_fix: bool,
 }
 
 /// Every lint, in reporting order.
 pub const LINTS: &[Lint] = &[
     lints::index_out_of_bounds::LINT,
+    lints::unknown_state::LINT,
     lints::unused_local::LINT,
     lints::unreachable_code::LINT,
     lints::bool_literal_comparison::LINT,
@@ -257,17 +261,30 @@ pub fn fixes(ws: &Workspace, file: FileId, range: TextRange, config: &LintConfig
 /// Applies the fixes of every reported problem of `file`, until none is
 /// left (or for a few rounds), and returns the new text and the number of
 /// applied fixes. `file` keeps the new text.
-pub fn fix_all(ws: &mut Workspace, file: FileId, config: &LintConfig) -> (String, usize) {
+///
+/// `manual_fixes`: also the fixes that are guesses (see [`Lint`]), when there
+/// is one candidate only.
+pub fn fix_all(
+    ws: &mut Workspace,
+    file: FileId,
+    config: &LintConfig,
+    manual_fixes: bool,
+) -> (String, usize) {
     let mut applied = 0;
     for _ in 0..8 {
         let Some(text) = ws.text(file) else { break };
         let mut edits: Vec<papyrus_ide::assists::TextEdit> = Vec::new();
         for d in lint(ws, file, config) {
-            let Some(fix) =
-                fixes(ws, file, d.range, config).into_iter().find(|a| a.fixes == Some(d.code))
-            else {
+            let manual = find(d.code).is_some_and(|l| l.manual_fix);
+            if manual && !manual_fixes {
                 continue;
-            };
+            }
+            let mut candidates =
+                fixes(ws, file, d.range, config).into_iter().filter(|a| a.fixes == Some(d.code));
+            let Some(fix) = candidates.next() else { continue };
+            if manual && candidates.next().is_some() {
+                continue;
+            }
             // Edits of one round must not overlap.
             let overlaps = fix.edits.iter().any(|e| {
                 edits.iter().any(|o| {

@@ -205,6 +205,8 @@ papyrus_analyzer lint --list
 papyrus_analyzer lint -D warnings -A style --fix Scripts/Source
 ```
 
+Like `cargo fix`, `--fix` refuses scripts with uncommitted changes and to run outside of a git repository: `--allow-dirty` · `--allow-staged` · `--allow-no-vcs` let it. Fixes that are guesses (the closest name of `unknown-state`) need `--allow-manual-fixes`.
+
 ### Attributes
 
 Rust-like attributes, in comments:

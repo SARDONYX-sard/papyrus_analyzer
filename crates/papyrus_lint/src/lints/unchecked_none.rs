@@ -53,6 +53,7 @@ pub(crate) const CAST: Lint = Lint {
     summary: "the result of a cast used without checking it is not None",
     run: run_cast,
     fix: None,
+    manual_fix: false,
 };
 
 pub(crate) const CALL: Lint = Lint {
@@ -61,6 +62,7 @@ pub(crate) const CALL: Lint = Lint {
     summary: "the result of a function returning an object (always maybe None) used without checking it is not None",
     run: run_call,
     fix: None,
+    manual_fix: false,
 };
 
 fn run_cast(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {

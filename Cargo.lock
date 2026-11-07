@@ -459,6 +459,7 @@ dependencies = [
  "papyrus_ide",
  "papyrus_parser",
  "rustc-hash",
+ "stdx",
 ]
 
 [[package]]
@@ -671,6 +672,10 @@ version = "0.1.0"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "stdx"
+version = "0.0.0"
 
 [[package]]
 name = "syn"

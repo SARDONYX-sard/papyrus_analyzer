@@ -44,7 +44,10 @@ pub(crate) fn ident_at<'a>(sema: &Sema<'a>, offset: TextSize) -> Option<SyntaxTo
 
 /// What the identifier at `offset` refers to, with the identifier range.
 pub(crate) fn def_at(sema: &Sema<'_>, offset: TextSize) -> Option<(TextRange, Def)> {
-    let tok = ident_at(sema, offset)?;
+    // A state named by a string: `GoToState("Busy")`.
+    let Some(tok) = ident_at(sema, offset) else {
+        return crate::states::state_def_at(sema, offset);
+    };
     let range = tok.text_range();
     let parent = tok.parent()?;
     let def = match parent.kind() {

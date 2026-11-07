@@ -155,6 +155,10 @@ impl<'s, 'a> Ctx<'s, 'a> {
 
     fn complete(mut self) -> Completions {
         let prev_kind = self.prev.map(|t| t.kind());
+        if let Some(state) = crate::states::state_ref_at(self.sema, self.offset) {
+            self.add_states(&state);
+            return self.out;
+        }
         if self.in_comment_or_string() {
             return self.out;
         }
@@ -184,8 +188,32 @@ impl<'s, 'a> Ctx<'s, 'a> {
             return false;
         };
         let inside = tok.text_range().start() < self.offset && self.offset < tok.text_range().end();
+        // A string without its closing quote yet goes on at its end.
+        let open_string = tok.kind() == SyntaxKind::STRING
+            && (tok.text().len() == 1 || !tok.text().ends_with('"'));
         (tok.kind().is_comment() || tok.kind() == SyntaxKind::STRING) && inside
-            || tok.kind() == SyntaxKind::LINE_COMMENT && self.offset == tok.text_range().end()
+            || (tok.kind() == SyntaxKind::LINE_COMMENT || open_string)
+                && self.offset == tok.text_range().end()
+    }
+
+    /// The states `GoToState("...")` can name: of the script and its parents,
+    /// then of the scripts extending it.
+    fn add_states(&mut self, state: &crate::states::StateRef<'a>) {
+        let mut seen: Vec<Name> = Vec::new();
+        for decl in crate::states::candidates(self.sema, state) {
+            if seen.contains(&decl.name) {
+                continue;
+            }
+            seen.push(decl.name);
+            let script = self.sema.ws.file(decl.file).index.name;
+            let item = self.push(
+                decl.name.as_str(),
+                CompletionKind::State,
+                if decl.in_child { 2 } else { 1 },
+            );
+            item.replace_range = state.name_range;
+            item.detail = script.map(|s| format!("State {} ({s})", decl.name));
+        }
     }
 
     fn anchor(&self) -> Option<papyrus_parser::SyntaxNode<'a>> {

@@ -28,6 +28,7 @@ pub(crate) const LINT: Lint = Lint {
     summary: "a comparison with `True` or `False`",
     run,
     fix: Some(fix),
+    manual_fix: false,
 };
 
 fn run(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {

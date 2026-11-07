@@ -45,7 +45,7 @@ fn fix_all_applies_every_fix() {
     let src = "ScriptName T\nFunction F(Bool b)\n    Int unused = 1\n    If b == True && (b != False)\n    EndIf\nEndFunction\n";
     let mut ws = Workspace::new();
     let file = ws.set_open(PathBuf::from("/ws/T.psc"), Arc::from(src), 0);
-    let (text, applied) = fix_all(&mut ws, file, &LintConfig::default());
+    let (text, applied) = fix_all(&mut ws, file, &LintConfig::default(), false);
     assert_eq!(text, "ScriptName T\nFunction F(Bool b)\n    If b && (b)\n    EndIf\nEndFunction\n");
     assert_eq!(applied, 3);
 }

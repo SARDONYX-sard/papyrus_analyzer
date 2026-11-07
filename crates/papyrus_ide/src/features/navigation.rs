@@ -9,6 +9,7 @@ use papyrus_parser::{
 use super::{decl_def, def_at, def_location, with_sema};
 use crate::{
     FileId, Workspace,
+    index::MemberKind,
     sema::{Def, FileSource, Sema},
 };
 
@@ -35,6 +36,15 @@ pub struct NavTarget {
 /// The declarations of the name at `offset`.
 pub fn goto_definition(ws: &Workspace, file: FileId, offset: TextSize) -> Vec<NavTarget> {
     with_sema(ws, file, |sema| {
+        // `GoToState("Busy")`: the states of that name.
+        if let Some(state) = crate::states::state_ref_at(sema, offset) {
+            return crate::states::candidates(sema, &state)
+                .into_iter()
+                .filter(|d| d.name.as_str().eq_ignore_ascii_case(state.name))
+                .filter_map(|d| def_location(sema, Def::Member { file: d.file, index: d.index }))
+                .map(|(file, focus_range, full_range)| NavTarget { file, focus_range, full_range })
+                .collect();
+        }
         let Some((_, def)) = def_at(sema, offset) else { return Vec::new() };
         // A script may be declared by several files, e.g. two versions of a
         // library in different import directories.
@@ -234,7 +244,23 @@ pub(crate) fn def_name(sema: &Sema<'_>, def: Def) -> Option<Name> {
 /// Occurrences of `def` (spelled `name`) in the file of `sema`.
 fn occurrences(sema: &Sema<'_>, def: Def, name: Name) -> Vec<Highlight> {
     let mut out = Vec::new();
+    // A state is named by strings too: `GoToState("Busy")`.
+    let state = match def {
+        Def::Member { file, index } if sema.member(file, index).kind == MemberKind::State => {
+            Some(file)
+        }
+        _ => None,
+    };
     for tok in sema.root.descendant_tokens() {
+        if let Some(file) = state
+            && tok.kind() == SyntaxKind::STRING
+            && tok.text().trim_matches('"').eq_ignore_ascii_case(name.as_str())
+            && let Some(r) = crate::states::state_ref(sema, tok)
+            && crate::states::refers_to(sema, &r, file)
+        {
+            out.push(Highlight { range: r.name_range, write: false });
+            continue;
+        }
         let Some(parent) = tok.parent() else { continue };
         let flag_keyword = tok.kind().is_keyword() && parent.kind() == SyntaxKind::FLAG;
         if !matches!(tok.kind(), SyntaxKind::IDENT | SyntaxKind::SELF_KW | SyntaxKind::PARENT_KW)

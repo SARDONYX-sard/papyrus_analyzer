@@ -35,6 +35,7 @@ pub(crate) const LINT: Lint = Lint {
     summary: "a local variable whose value is never read",
     run,
     fix: Some(fix),
+    manual_fix: false,
 };
 
 fn run(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {

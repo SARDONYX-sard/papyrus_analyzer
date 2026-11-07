@@ -134,8 +134,9 @@ fn capabilities(init: &InitializeParams) -> ServerCapabilities {
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(true),
             // `[`, `(` and `,` for the lints of `; #[allow(...)]` comments,
-            // where the editor does not suggest as you type.
-            trigger_characters: Some([".", "[", "(", ","].map(str::to_owned).to_vec()),
+            // where the editor does not suggest as you type; `"` for the states
+            // of `GoToState("...")`, in strings likewise.
+            trigger_characters: Some([".", "[", "(", ",", "\""].map(str::to_owned).to_vec()),
             ..Default::default()
         }),
         signature_help_provider: Some(SignatureHelpOptions {

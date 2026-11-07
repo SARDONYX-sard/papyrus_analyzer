@@ -166,6 +166,10 @@
           "$ref": "#/properties/lints/definitions/level",
           "description": "correctness: a constant index outside of an array of known length (`New Int[4]`, then `a[4]`)."
         },
+        "unknown-state": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: `GoToState(\"...\")` with a state declared nowhere."
+        },
         "unchecked-cast": {
           "$ref": "#/properties/lints/definitions/level",
           "description": "pedantic: the result of a cast between objects used without checking None."

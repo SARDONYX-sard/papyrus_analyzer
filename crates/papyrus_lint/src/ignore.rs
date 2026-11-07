@@ -815,7 +815,7 @@ mod tests {
             ["allow_lint", "allow_lint_file"]
         );
 
-        let (fixed, applied) = crate::fix_all(&mut ws, file, &config);
+        let (fixed, applied) = crate::fix_all(&mut ws, file, &config, false);
         assert_eq!(applied, 1);
         assert_eq!(
             fixed,

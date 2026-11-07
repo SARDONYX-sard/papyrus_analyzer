@@ -13,6 +13,7 @@ doctest = false
 [dependencies]
 papyrus_ide.workspace    = true
 papyrus_parser.workspace = true
+stdx.workspace           = true
 
 rustc-hash.workspace = true
 

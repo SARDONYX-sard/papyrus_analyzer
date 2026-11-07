@@ -41,7 +41,9 @@ export async function lintProject(fix: boolean): Promise<void> {
     if (fix) {
       await saveScripts();
     }
-    const args = fix ? ["lint", "--fix", ...project.dirs] : ["lint", ...project.dirs];
+    // Asked for explicitly in the editor, with its own unsaved changes saved.
+    const fixArgs = ["--fix", "--allow-dirty", "--allow-staged", "--allow-no-vcs"];
+    const args = fix ? ["lint", ...fixArgs, ...project.dirs] : ["lint", ...project.dirs];
     await runServerTask(args, project.cwd, fix ? "lint --fix project" : "lint project");
   }
 }

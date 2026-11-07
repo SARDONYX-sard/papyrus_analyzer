@@ -309,7 +309,8 @@ pub struct ScriptIndex {
     pub members: Box<[Member]>,
     /// Ranges of the script documentation comments.
     pub docs: Box<[TextRange]>,
-    /// The identifiers and keywords of the text, as sorted [`Name::key`]s:
+    /// The identifiers, keywords and identifier-like strings of the text, as
+    /// sorted [`Name::key`]s:
     /// see [`ScriptIndex::mentions`].
     pub words: Box<[Symbol]>,
 }
@@ -330,8 +331,21 @@ impl ScriptIndex {
         let mut words: Vec<Symbol> = file
             .syntax()
             .descendant_tokens()
-            .filter(|t| t.kind() == SyntaxKind::IDENT || t.kind().is_keyword())
-            .map(|t| Name::new(t.text()).key())
+            .filter_map(|t| {
+                let text = match t.kind() {
+                    SyntaxKind::IDENT => t.text(),
+                    k if k.is_keyword() => t.text(),
+                    // Strings name states: `GoToState("Busy")`.
+                    SyntaxKind::STRING => {
+                        let inner = t.text().trim_matches('"');
+                        let word = !inner.is_empty()
+                            && inner.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                        word.then_some(inner)?
+                    }
+                    _ => return None,
+                };
+                Some(Name::new(text).key())
+            })
             .collect();
         words.sort_unstable();
         words.dedup();
@@ -339,8 +353,9 @@ impl ScriptIndex {
         index
     }
 
-    /// Whether the file may refer to `name`: an identifier or keyword of its
-    /// text is spelled so. Searches skip the other files without reading them.
+    /// Whether the file may refer to `name`: an identifier, keyword or string
+    /// of its text is spelled so. Searches skip the other files without
+    /// reading them.
     pub fn mentions(&self, name: Name) -> bool {
         self.words.binary_search(&name.key()).is_ok()
     }

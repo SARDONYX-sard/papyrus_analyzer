@@ -253,7 +253,13 @@ impl Server {
                 if matches!(trigger, Some("[" | "(" | ",")) {
                     return None;
                 }
-                (lines, papyrus_ide::completions(&self.ws, file, offset))
+                let mut completions = papyrus_ide::completions(&self.ws, file, offset);
+                // A quote only opens the states of `GoToState("`: it also ends
+                // strings, where the code would be proposed.
+                if trigger == Some("\"") {
+                    completions.items.retain(|i| i.kind == papyrus_ide::CompletionKind::State);
+                }
+                (lines, completions)
             };
         let snippets = self
             .caps
@@ -721,10 +727,12 @@ impl Server {
                     .collect();
                 #[allow(clippy::mutable_key_type)]
                 let changes = std::iter::once((uri.clone(), edits)).collect();
+                // Allowing a problem is an option, not the fix to apply first.
+                let preferred = !diagnostics.is_empty() && !a.id.starts_with("allow_lint");
                 Some(CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
                     title: a.label,
                     kind: Some(kind),
-                    is_preferred: Some(!diagnostics.is_empty()),
+                    is_preferred: Some(preferred),
                     diagnostics: (!diagnostics.is_empty()).then_some(diagnostics),
                     edit: Some(lsp_types::WorkspaceEdit {
                         changes: Some(changes),

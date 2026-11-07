@@ -6,6 +6,8 @@
 //!   of the engine scripts) cannot be renamed.
 //! - Parameters are renamed in named arguments of calls too.
 //! - A script is renamed with its file, `Old.psc` becoming `New.psc`.
+//! - A state is renamed in the scripts sharing it, and in the strings naming
+//!   it: `GoToState("Busy")`, `GetState() == "Busy"`.
 
 use papyrus_intern::Name;
 use papyrus_parser::{
@@ -153,6 +155,9 @@ fn declaring_file(def: Def) -> Option<FileId> {
 fn family(sema: &Sema<'_>, def: Def) -> Vec<Def> {
     let Def::Member { file, index } = def else { return vec![def] };
     let m = sema.member(file, index);
+    if m.kind == MemberKind::State {
+        return crate::states::state_family(sema, file, index);
+    }
     if !m.is_callable() || m.property.is_some() {
         return vec![def];
     }
