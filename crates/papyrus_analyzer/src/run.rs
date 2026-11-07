@@ -234,8 +234,12 @@ pub(crate) fn test(args: &[String]) -> i32 {
         failed |= report(&results, filtered_out, started);
     }
 
-    // Like `cargo test`, the doc tests after.
-    let docs = crate::doctest::find(&scripts);
+    // Like `cargo test`, the doc tests after: of the scripts, then of the
+    // Markdown files (a README...).
+    let mut markdown = Vec::new();
+    collect_ext(&cwd, "md", &mut markdown);
+    let mut docs = crate::doctest::find(&scripts);
+    docs.extend(crate::doctest::find_markdown(&markdown, &cwd));
     if doc_only || !docs.is_empty() {
         let started = std::time::Instant::now();
         let all = docs.len();
@@ -406,15 +410,23 @@ pub(crate) fn start(
 }
 
 pub(crate) fn collect(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    collect_ext(dir, "psc", out);
+}
+
+/// The `.EXT` files below `dir`, but in hidden, `target` and `node_modules`
+/// directories.
+fn collect_ext(dir: &std::path::Path, ext: &str, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
+    let mut entries: Vec<_> = entries.flatten().collect();
+    entries.sort_by_key(|e| e.path());
+    for entry in entries {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
         if entry.file_type().is_ok_and(|t| t.is_dir()) {
             if !(name.starts_with('.') || name == "target" || name == "node_modules") {
-                collect(&path, out);
+                collect_ext(&path, ext, out);
             }
-        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("psc")) {
+        } else if path.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
             out.push(path);
         }
     }

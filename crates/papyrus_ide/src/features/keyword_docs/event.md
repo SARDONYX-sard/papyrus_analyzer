@@ -4,6 +4,7 @@ The body ends with `EndEvent`.
 # Examples
 
 ```papyrus
+# ScriptName MyQuest extends Quest
 Event OnInit()
     RegisterForSingleUpdate(5.0)
 EndEvent

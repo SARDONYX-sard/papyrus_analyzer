@@ -87,16 +87,16 @@ fn run_body(members: &str, body: &str) -> Vm {
 
 #[test]
 fn every_function_of_papyrus_analyzer_has_examples() {
-    // Each declaration, then its documentation, up to the next declaration. (The
-    // tests compiling it check that it parses.)
+    // Each declaration, then the `;` comments right above it: the examples. (The
+    // tests compiling it check that it parses, the doc tests that they work.)
     let lines: Vec<&str> = crate::PAPYRUS_ANALYZER_PSC.lines().collect();
     let declarations: Vec<usize> =
         (0..lines.len()).filter(|&i| lines[i].trim_end().ends_with(" Native")).collect();
     assert!(declarations.len() > 10);
-    for (n, &at) in declarations.iter().enumerate() {
-        let end = declarations.get(n + 1).copied().unwrap_or(lines.len());
-        let docs = lines[at + 1..end].join("\n");
-        assert!(docs.contains("# Examples\n\n```papyrus\n"), "{}: no `# Examples`", lines[at]);
+    for &at in &declarations {
+        let start = (0..at).rev().take_while(|&i| lines[i].starts_with(';')).last().unwrap_or(at);
+        let docs = lines[start..at].join("\n");
+        assert!(docs.contains("; # Examples\n;\n; ```papyrus\n"), "{}: no `# Examples`", lines[at]);
     }
 }
 

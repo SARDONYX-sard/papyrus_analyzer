@@ -47,7 +47,8 @@ Function AssertStringEq(String asActual, String asExpected, String asMessage = "
 ; # Examples
 ;
 ; ```papyrus
-; AssertBoolEq(IsDisabled(), False)
+; Actor akActor = NewObject("Actor") as Actor
+; AssertBoolEq(akActor.IsDisabled(), False)
 ; ```
 Function AssertBoolEq(Bool abActual, Bool abExpected, String asMessage = "") Global Native
 {Fails unless abActual == abExpected.}
@@ -64,7 +65,8 @@ Function AssertTrue(Bool abValue, String asMessage = "") Global Native
 ; # Examples
 ;
 ; ```papyrus
-; AssertFalse(IsDisabled())
+; Actor akActor = NewObject("Actor") as Actor
+; AssertFalse(akActor.IsDead())
 ; ```
 Function AssertFalse(Bool abValue, String asMessage = "") Global Native
 {Fails unless abValue is False.}
@@ -138,7 +140,8 @@ Int Function CallCount(String asNative) Global Native
 ; # Examples
 ;
 ; ```papyrus
-; Lock()
+; ObjectReference akDoor = NewObject("ObjectReference") as ObjectReference
+; akDoor.Lock()
 ; AssertCalled("ObjectReference.Lock", 1)
 ; AssertCalled("Lock")
 ; ```

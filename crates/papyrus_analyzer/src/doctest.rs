@@ -199,6 +199,28 @@ pub(crate) fn find(scripts: &[PathBuf]) -> Vec<DocTest> {
     read.flat_map(|(path, text)| find_in(path, &text)).collect()
 }
 
+/// The doc tests of the Markdown files `paths`: their examples, in scripts of
+/// their own. Named after their path from `root`, like `README.md (line 5)`.
+pub(crate) fn find_markdown(paths: &[PathBuf], root: &Path) -> Vec<DocTest> {
+    let mut out = Vec::new();
+    for path in paths {
+        let Ok(text) = std::fs::read_to_string(path) else { continue };
+        let shown =
+            path.strip_prefix(root).unwrap_or(path).display().to_string().replace('\\', "/");
+        for example in examples(&text.replace("\r\n", "\n")) {
+            let line = example.line + 1;
+            out.push(DocTest {
+                name: format!("{shown} (line {line})"),
+                path: path.clone(),
+                line,
+                example,
+                base: None,
+            });
+        }
+    }
+    out
+}
+
 /// The doc tests of the script `path`, whose text is `text`.
 pub(crate) fn find_in(path: &Path, text: &str) -> Vec<DocTest> {
     let mut out = Vec::new();
@@ -262,7 +284,12 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(found.len(), 4);
         for doc in &found {
-            assert_eq!(lines[doc.line - 1].trim_start_matches(';').trim(), "```papyrus", "{}", doc.name);
+            assert_eq!(
+                lines[doc.line - 1].trim_start_matches(';').trim(),
+                "```papyrus",
+                "{}",
+                doc.name
+            );
         }
         let names: Vec<&str> = found.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, ["T.F (line 5)", "T.G (line 13)", "T.H (line 21)", "T.I (line 32)"]);
@@ -291,15 +318,15 @@ mod tests {
     }
 
     /// Runs the examples of `markdown`, documenting `what`.
-    fn check(failures: &mut Vec<String>, what: &str, markdown: &str, base: &str, game: &Path) {
+    fn check(failures: &mut Vec<String>, docs: &[DocTest], game: &Path) {
         let dir = std::env::temp_dir().join("papyrus-doc-tests");
         let mut ws = Workspace::new();
         crate::builtin::install(&mut ws, std::slice::from_ref(&dir));
-        for (i, example) in examples(markdown).iter().enumerate() {
+        for (i, doc) in docs.iter().enumerate() {
             let name = format!("DocTest{i}");
-            let result = run(&ws, &[game.to_path_buf()], &dir, example, &name, Some(base));
-            if let Err(problem) = result {
-                failures.push(format!("{what} (line {}): {problem}", example.line + 1));
+            let base = doc.base.as_deref();
+            if let Err(problem) = run(&ws, &[game.to_path_buf()], &dir, &doc.example, &name, base) {
+                failures.push(format!("{}: {problem}", doc.name));
             }
         }
     }
@@ -313,20 +340,26 @@ mod tests {
             }
             return;
         };
-        let mut failures = Vec::new();
+        // Like `papyrus_analyzer test --doc` does: the Markdown files in scripts
+        // of their own, the built-in script of tests as its users read it.
+        let mut docs = Vec::new();
         for (what, markdown) in papyrus_ide::documentation() {
-            check(&mut failures, &what, &markdown.replace("\r\n", "\n"), "ObjectReference", &game);
+            docs.extend(examples(&markdown.replace("\r\n", "\n")).into_iter().map(|example| {
+                let line = example.line + 1;
+                DocTest {
+                    name: format!("{what} (line {line})"),
+                    path: PathBuf::new(),
+                    line,
+                    example,
+                    base: None,
+                }
+            }));
         }
-        // The built-in script of tests, as its users read it.
-        let psc = papyrus_vm::PAPYRUS_ANALYZER_PSC;
-        let index = papyrus_ide::index_text(psc);
-        let documented = std::iter::once(("PapyrusAnalyzer".to_owned(), &index.docs[..])).chain(
-            index.members.iter().map(|m| (format!("PapyrusAnalyzer.{}", m.name), &m.docs[..])),
-        );
-        for (what, ranges) in documented {
-            let markdown = papyrus_ide::index::doc_comments_markdown(psc, ranges);
-            check(&mut failures, &what, &markdown, "ObjectReference", &game);
-        }
+        let psc = papyrus_vm::PAPYRUS_ANALYZER_PSC.replace("\r\n", "\n");
+        docs.extend(find_in(Path::new("PapyrusAnalyzer.psc"), &psc));
+        assert!(docs.len() > 30);
+        let mut failures = Vec::new();
+        check(&mut failures, &docs, &game);
         assert!(failures.is_empty(), "{} failed:\n\n{}", failures.len(), failures.join("\n\n"));
     }
 }

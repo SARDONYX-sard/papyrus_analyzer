@@ -166,7 +166,9 @@ fn built_in_methods_have_examples_that_parse() {
         Builtin::OnEndState,
     ];
     for b in all {
-        let docs = b.docs_source();
+        // As shown: without the hidden lines (`# ScriptName ...`), which the doc
+        // tests run.
+        let docs = b.docs().replace("\r\n", "\n");
         let section = docs
             .split("# Examples")
             .nth(1)

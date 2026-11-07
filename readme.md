@@ -259,7 +259,7 @@ papyrus_analyzer test kills                # the tests whose Script.Function con
 papyrus_analyzer test --doc                # the doc tests only
 ```
 
-Doc tests, like rustdoc: the ` ```papyrus ` examples of documentation comments compile and run.
+Doc tests, like rustdoc: the ` ```papyrus ` examples of documentation comments and `.md` files compile and run.
 
 | Fence                  |                                 |
 | ---------------------- | ------------------------------- |
