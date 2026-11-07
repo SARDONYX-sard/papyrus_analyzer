@@ -5,65 +5,9 @@
 name    = "MyMod"
 version = "0.1.0"
 
-[var]
-# papyrus.toml — shared with your team. Paths: relative to this file.
-# Machine paths → ${NAME} variables, first wins:
-#   papyrus.var setting | --var NAME=VALUE  >  papyrus.local.toml [var] (not committed)  >  [var] below
-# Built-ins: ${env:NAME} · ${workspaceFolder} · ${game:SkyrimSE | SkyrimLE | SkyrimVR | Enderal | EnderalSE} (registry, Windows)
-SKYRIM_DIR = "${game:SkyrimSE}"
-
-[compiler] # no path → built-in compiler
-# path = "${SKYRIM_DIR}/Papyrus Compiler/PapyrusCompiler.exe"
-args = [] # extra arguments, as is
-
 [build]
-sources  = ["src"]                                                    # script dirs, recursive
-output   = "${workspaceFolder}/target/papyrus"                        # .pex, same tree as sources
-imports  = ["${SKYRIM_DIR}/Data/Scripts/Source"]                      # lookup order, after sources
-flags    = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg" # Hidden, Conditional, ...
-optimize = true
-release  = false # strip DebugOnly
-final    = false # strip BetaOnly
-quiet    = true  # errors only
+sources = ["src"]
+output  = "${workspaceFolder}/target/papyrus"
 
 [test]
-sources = ["tests"] # ; #[test] functions, PapyrusAnalyzer.Assert* built in: run by papyrus_analyzer test, not built
-
-[dependencies] # projects whose sources this one sees
-# MCMHelper = { path = "../MCMHelper" }
-
-[lints]               # lint | group | "all" = "allow" | "warn" | "deny"
-complexity   = "warn" # groups: correctness · suspicious · complexity · style · pedantic
-unused-local = "deny" # lints: papyrus_analyzer lint --list
-pedantic     = "deny"
-
-[format]               # unset → .editorconfig → editor
-indent-style = "space" # space | tab
-indent-size  = 4
-# max-blank-lines = 1
-# max-width = 0                 # > 0: longer lines break with \, long attributes split; 0: as written
-newline       = "lf" # auto | lf | crlf
-final-newline = true
-#
-# Cases: canonical | preserve | PascalCase | camelCase | lowercase | UPPERCASE
-#   names: canonical = as defined (actor → Actor), the others start from it
-keyword-case = "canonical"
-# script-case = "canonical"     # types · extends · Import · Debug.Trace
-# function-case = "canonical"   # functions · events
-# property-case = "canonical"
-# variable-case = "canonical"   # locals · parameters · script variables
-# flag-case = "canonical"       # Hidden · Conditional
-#
-# [format.keywords] # one keyword, case only; wins over keyword-case
-# as = "As"
-
-# Several projects, like Cargo workspaces → in the papyrus.toml of the parent folder.
-# Members inherit; own values win (imports appended). A member sees its sources + dependencies + imports.
-# [workspace]
-# members = ["*"]               # "dir" | "dir/*" (subdirs with a papyrus.toml); ${NAME} allowed
-# exclude = []
-# [workspace.var]
-# [workspace.compiler]          # path · args
-# [workspace.build]             # imports · flags · optimize · release · final · quiet
-# [workspace.lints]
-# [workspace.format]
+sources = ["tests"]

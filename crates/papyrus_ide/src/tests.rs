@@ -981,6 +981,77 @@ EndFunction
     );
 }
 
+const FORM_WITH_MOD_EVENTS: &str = "ScriptName Form Hidden\nFunction RegisterForModEvent(String eventName, String callbackName) Native\nFunction SendModEvent(String eventName, String strArg = \"\", Float numArg = 0.0) Native\nEvent OnActivate()\nEndEvent\n";
+
+/// A script extending `Form`, with `$0` in `body`, and a script sending events.
+fn mod_events_workspace(body: &str) -> (Workspace, FileId, TextSize) {
+    let src = format!(
+        "ScriptName T extends Form\nFunction F()\n    {body}\nEndFunction\nEvent OnMine(String a)\nEndEvent\n"
+    );
+    let (mut ws, file, offset) = workspace(&[("T.psc", src.as_str())]);
+    ws.set_open(PathBuf::from("/ws/Form.psc"), Arc::from(FORM_WITH_MOD_EVENTS), 0);
+    ws.set_open(
+        PathBuf::from("/ws/Sender.psc"),
+        Arc::from("ScriptName Sender extends Form\nFunction S()\n    SendModEvent(\"Known\")\nEndFunction\n"),
+        0,
+    );
+    (ws, file, offset)
+}
+
+#[test]
+fn mod_event_callbacks_complete_and_refer_to_their_event() {
+    let (ws, file, offset) = mod_events_workspace("RegisterForModEvent(\"A\", \"$0\")");
+    let labels: Vec<String> =
+        completions(&ws, file, offset).items.into_iter().map(|i| i.label).collect();
+    // The events of the script; not the functions, not those of the game.
+    assert!(labels.iter().any(|l| l == "OnMine"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "F"), "{labels:?}");
+
+    let (ws, file, offset) = mod_events_workspace("RegisterForModEvent(\"A\", \"On$0Mine\")");
+    let targets = goto_definition(&ws, file, offset);
+    let text = ws.text(file).unwrap();
+    assert_eq!(targets.len(), 1);
+    assert_eq!(&text[targets[0].focus_range], "OnMine");
+    let hover = hover(&ws, file, offset).unwrap();
+    assert!(hover.markdown.contains("OnMine"), "{}", hover.markdown);
+
+    // References from the string and from the declaration, and rename.
+    let mut found: Vec<TextRange> =
+        references(&ws, file, offset, true).into_iter().map(|(_, r)| r).collect();
+    found.sort_by_key(|r| r.start());
+    assert_eq!(found.len(), 2);
+    assert_eq!(&text[found[0]], "OnMine");
+    assert_eq!(found[1], targets[0].focus_range);
+    let edit = rename(&ws, file, offset, "OnYours").unwrap();
+    assert_eq!(edit.ranges.len(), 2);
+}
+
+#[test]
+fn mod_event_names_complete_and_go_to_the_other_half() {
+    let (ws, file, offset) = mod_events_workspace("RegisterForModEvent(\"$0\", \"OnMine\")");
+    let labels: Vec<String> =
+        completions(&ws, file, offset).items.into_iter().map(|i| i.label).collect();
+    assert_eq!(labels, ["Known"]);
+
+    let (ws, file, offset) = mod_events_workspace("RegisterForModEvent(\"Kn$0own\", \"OnMine\")");
+    let targets = goto_definition(&ws, file, offset);
+    assert_eq!(targets.len(), 1);
+    let NavFile::Script(sender) = targets[0].file else { panic!("not a script") };
+    assert_eq!(ws.file(sender).index.name_str(), "Sender");
+
+    let found = references(&ws, file, offset, true);
+    assert_eq!(found.len(), 2);
+
+    let markdown = hover(&ws, file, offset).unwrap().markdown;
+    assert!(markdown.contains("Registered by: `T`"), "{markdown}");
+    assert!(markdown.contains("Sent by: `Sender`"), "{markdown}");
+
+    // Other strings: nothing; a function of the script of that name neither.
+    let (ws, file, offset) = mod_events_workspace("Debug.Trace(\"Kn$0own\")");
+    assert!(goto_definition(&ws, file, offset).is_empty());
+    assert!(hover(&ws, file, offset).is_none());
+}
+
 #[test]
 fn document_symbols_nest_states_and_accessors() {
     let (ws, file, _) = workspace(&[(

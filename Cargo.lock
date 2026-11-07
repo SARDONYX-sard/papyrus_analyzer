@@ -457,6 +457,7 @@ name = "papyrus_lint"
 version = "0.0.0"
 dependencies = [
  "papyrus_ide",
+ "papyrus_intern",
  "papyrus_parser",
  "rustc-hash",
  "stdx",

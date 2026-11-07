@@ -389,7 +389,7 @@ impl Server {
             }
             crate::ext::ManifestTemplate::METHOD => {
                 handle::<crate::ext::ManifestTemplate>(self, params, |_, ()| {
-                    papyrus_project::TEMPLATE.to_owned()
+                    papyrus_project::template(env!("CARGO_PKG_VERSION"))
                 })
             }
             crate::ext::Decompile::METHOD => {

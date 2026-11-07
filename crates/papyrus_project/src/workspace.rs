@@ -55,9 +55,9 @@ pub(crate) struct RawWorkspace {
     #[serde(default)]
     build: RawWorkspaceBuild,
     #[serde(default)]
-    lints: BTreeMap<String, Spanned<toml::Value>>,
+    pub(crate) lints: BTreeMap<String, Spanned<toml::Value>>,
     #[serde(default)]
-    format: RawFormat,
+    pub(crate) format: RawFormat,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -358,11 +358,26 @@ pub fn find_workspace_root(manifest_path: &Path, vars: &Variables) -> Option<Pat
             .iter()
             .filter_map(|m| vars.expand(m.get_ref(), &mut BTreeMap::new()).ok())
             .flat_map(|m| expand_member(dir, &m));
-        if members.into_iter().any(|m| m == member) {
+        let excluded = ws
+            .exclude
+            .iter()
+            .filter_map(|e| vars.expand(e.get_ref(), &mut BTreeMap::new()).ok())
+            .any(|e| resolve_path(dir, &e) == member);
+        if !excluded && members.into_iter().any(|m| m == member) {
             return Some(candidate);
         }
     }
     None
+}
+
+/// The manifest and the `[workspace]` table of the workspace of `manifest_path`,
+/// for what needs no variables: lint levels and formatter settings.
+pub(crate) fn workspace_of(manifest_path: &Path) -> Option<(PathBuf, RawWorkspace)> {
+    let dir = manifest_path.parent()?;
+    let root = find_workspace_root(manifest_path, &Variables::for_command_line(dir))?;
+    let text = std::fs::read_to_string(&root).ok()?;
+    let raw: crate::RawManifest = toml::from_str(&text).ok()?;
+    Some((root, raw.workspace?))
 }
 
 /// Fills `dependency_sources` from `[dependencies]`: the sources of the

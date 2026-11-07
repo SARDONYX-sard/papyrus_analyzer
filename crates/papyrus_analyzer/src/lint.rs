@@ -20,14 +20,15 @@ usage: papyrus_analyzer lint [OPTIONS] [PATH]...
   PATH            scripts, or directories searched recursively (default: .)
 
 options:
-  --fix           apply the automatic fixes and rewrite the files. Like
-                  `cargo fix`, it refuses scripts with uncommitted changes,
-                  and to run without a git repository:
-    --allow-dirty         fix scripts with changes not staged, or untracked
-    --allow-staged        fix scripts with staged changes
-    --allow-no-vcs        fix without a git repository
-    --allow-manual-fixes  also apply the fixes that are guesses (`unknown-state`),
-                          when there is one candidate only
+  --fix           apply the automatic fixes and rewrite the files
+    --allow-manual-fixes  also apply the fixes that are guesses (`unknown-state`,
+                          `unknown-event`, `unknown-mod-callback`,
+                          `unknown-mod-event`), when there is one candidate only
+    --check-vcs           like `cargo fix`, refuse scripts with uncommitted
+                          changes, and to run without a git repository:
+      --allow-dirty       fix scripts with changes not staged, or untracked
+      --allow-staged      fix scripts with staged changes
+      --allow-no-vcs      fix without a git repository
   -A, --allow NAME   silence a lint, a group or `all`
   -W, --warn NAME    report as a warning
   -D, --deny NAME    report as an error; `-D warnings` turns every warning
@@ -43,7 +44,7 @@ examples:
   papyrus_analyzer lint Scripts\\Source
   papyrus_analyzer lint -D warnings -A style
   papyrus_analyzer lint --fix Scripts\\Source\\MyQuest.psc
-  papyrus_analyzer lint --fix --allow-dirty --allow-staged";
+  papyrus_analyzer lint --fix --check-vcs --allow-staged";
 
 /// Runs the subcommand and returns the process exit code.
 pub(crate) fn run(args: &[String]) -> i32 {
@@ -80,6 +81,10 @@ pub(crate) fn run(args: &[String]) -> i32 {
             }
             "--allow-manual-fixes" => {
                 manual_fixes = true;
+                None
+            }
+            "--check-vcs" => {
+                vcs.check = true;
                 None
             }
             "--allow-dirty" => {
@@ -139,7 +144,10 @@ pub(crate) fn run(args: &[String]) -> i32 {
     if paths.is_empty() {
         paths.push(PathBuf::from("."));
     }
-    if fix && let Err(message) = check_vcs(&paths, vcs) {
+    if fix
+        && vcs.check
+        && let Err(message) = check_vcs(&paths, vcs)
+    {
         eprintln!("{message}");
         return 2;
     }
@@ -184,16 +192,17 @@ pub(crate) fn run(args: &[String]) -> i32 {
     i32::from(errors > 0)
 }
 
-/// What `--fix` accepts to overwrite, like `cargo fix`.
+/// What `--fix --check-vcs` accepts to overwrite, like `cargo fix`.
 #[derive(Clone, Copy, Default)]
 struct VcsOptions {
+    check: bool,
     allow_dirty: bool,
     allow_staged: bool,
     allow_no_vcs: bool,
 }
 
-/// `--fix` overwrites scripts: they must be safe in git, to look at and undo
-/// its changes.
+/// With `--check-vcs`: the scripts `--fix` overwrites must be safe in git, to
+/// look at and undo its changes.
 fn check_vcs(paths: &[PathBuf], options: VcsOptions) -> Result<(), String> {
     // From the current directory on purpose: `paths` are relative to it.
     #[allow(clippy::disallowed_methods)]

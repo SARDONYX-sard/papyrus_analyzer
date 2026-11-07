@@ -24,9 +24,37 @@ pub fn hover(ws: &Workspace, file: FileId, offset: TextSize) -> Option<HoverResu
         keyword_hover(sema, offset)
             .or_else(|| operator_hover(sema, offset))
             .or_else(|| name_hover(sema, offset))
+            .or_else(|| mod_event_hover(sema, offset))
             .or_else(|| fragment_hover(sema, offset))
     })
     .flatten()
+}
+
+/// The hover of the name of a custom event: who registers it and who sends it.
+fn mod_event_hover(sema: &Sema<'_>, offset: TextSize) -> Option<HoverResult> {
+    use crate::mod_events::{ModEventUse, mod_event_at, sites};
+    let event = mod_event_at(sema, offset)
+        .filter(|r| r.usage != ModEventUse::Callback && !r.name.is_empty())?;
+    let all = sites(sema.ws);
+    let scripts = |usage: ModEventUse| {
+        let mut names: Vec<String> = all
+            .iter()
+            .filter(|s| s.usage == usage && s.name.eq_ignore_ascii_case(event.name))
+            .map(|s| format!("`{}`", sema.ws.file(s.file).index.name_str()))
+            .collect();
+        names.sort();
+        names.dedup();
+        if names.is_empty() { "no known script".to_owned() } else { names.join(", ") }
+    };
+    Some(HoverResult {
+        range: event.name_range,
+        markdown: format!(
+            "```papyrus\nmod event \"{}\"\n```\n\nA custom event of SKSE, named by strings.\n\nRegistered by: {}\n\nSent by: {}\n\nA mod may also send it from outside of the scripts (a Flash menu, a DLL).",
+            event.name,
+            scripts(ModEventUse::Register),
+            scripts(ModEventUse::Send),
+        ),
+    })
 }
 
 /// What a comment of the fragments of the Creation Kit means.

@@ -10,6 +10,9 @@ use super::{decl_def, def_at, def_location, with_sema};
 use crate::{
     FileId, Workspace,
     index::MemberKind,
+    mod_events::{
+        ModEventRef, ModEventSite, ModEventUse, mod_event_at, mod_event_ref, names_callable, sites,
+    },
     sema::{Def, FileSource, Sema},
 };
 
@@ -43,6 +46,21 @@ pub fn goto_definition(ws: &Workspace, file: FileId, offset: TextSize) -> Vec<Na
                 .filter(|d| d.name.as_str().eq_ignore_ascii_case(state.name))
                 .filter_map(|d| def_location(sema, Def::Member { file: d.file, index: d.index }))
                 .map(|(file, focus_range, full_range)| NavTarget { file, focus_range, full_range })
+                .collect();
+        }
+        // `SendModEvent("MyEvent")`: who registers it; the other way around too.
+        if let Some(event) = event_name_at(sema, offset) {
+            let wanted = match event.usage {
+                ModEventUse::Send => ModEventUse::Register,
+                _ => ModEventUse::Send,
+            };
+            return same_event(ws, event.name)
+                .filter(|s| s.usage == wanted)
+                .map(|s| NavTarget {
+                    file: NavFile::Script(s.file),
+                    focus_range: s.range,
+                    full_range: s.range,
+                })
                 .collect();
         }
         let Some((_, def)) = def_at(sema, offset) else { return Vec::new() };
@@ -118,6 +136,17 @@ pub struct Highlight {
 /// All occurrences of the name at `offset` in the same file.
 pub fn highlight(ws: &Workspace, file: FileId, offset: TextSize) -> Vec<Highlight> {
     with_sema(ws, file, |sema| {
+        if let Some(event) = event_name_at(sema, offset) {
+            return sema
+                .root
+                .descendant_tokens()
+                .filter_map(|t| mod_event_ref(sema, t))
+                .filter(|r| {
+                    r.usage != ModEventUse::Callback && r.name.eq_ignore_ascii_case(event.name)
+                })
+                .map(|r| Highlight { range: r.name_range, write: false })
+                .collect();
+        }
         let Some((_, def)) = def_at(sema, offset) else { return Vec::new() };
         let Some(name) = def_name(sema, def) else { return Vec::new() };
         occurrences(sema, def, name)
@@ -132,6 +161,10 @@ pub fn references(
     offset: TextSize,
     include_declaration: bool,
 ) -> Vec<(NavFile, TextRange)> {
+    let event = with_sema(ws, file, |sema| event_name_at(sema, offset).map(|e| e.name.to_owned()));
+    if let Some(Some(event)) = event {
+        return same_event(ws, &event).map(|s| (NavFile::Script(s.file), s.range)).collect();
+    }
     let Some(Some((def, name))) = with_sema(ws, file, |sema| {
         let (_, def) = def_at(sema, offset)?;
         Some((def, def_name(sema, def)?))
@@ -139,6 +172,17 @@ pub fn references(
         return Vec::new();
     };
     find_references(ws, def, name, include_declaration)
+}
+
+/// The name of a custom event at `offset`, not its callback.
+fn event_name_at<'a>(sema: &Sema<'a>, offset: TextSize) -> Option<ModEventRef<'a>> {
+    mod_event_at(sema, offset).filter(|r| r.usage != ModEventUse::Callback && !r.name.is_empty())
+}
+
+/// The strings naming the custom event `name`, in every known script.
+fn same_event(ws: &Workspace, name: &str) -> impl Iterator<Item = ModEventSite> {
+    let name = name.to_owned();
+    sites(ws).into_iter().filter(move |s| s.name.eq_ignore_ascii_case(&name))
 }
 
 /// All uses of the flag defined at `offset` in the flags file.
@@ -251,12 +295,24 @@ fn occurrences(sema: &Sema<'_>, def: Def, name: Name) -> Vec<Highlight> {
         }
         _ => None,
     };
+    // So is a callback: `RegisterForModEvent("MyEvent", "OnMyEvent")`.
+    let callable =
+        matches!(def, Def::Member { file, index } if sema.member(file, index).is_callable());
     for tok in sema.root.descendant_tokens() {
-        if let Some(file) = state
-            && tok.kind() == SyntaxKind::STRING
-            && tok.text().trim_matches('"').eq_ignore_ascii_case(name.as_str())
+        let named = tok.kind() == SyntaxKind::STRING
+            && tok.text().trim_matches('"').eq_ignore_ascii_case(name.as_str());
+        if named
+            && let Some(file) = state
             && let Some(r) = crate::states::state_ref(sema, tok)
             && crate::states::refers_to(sema, &r, file)
+        {
+            out.push(Highlight { range: r.name_range, write: false });
+            continue;
+        }
+        if named
+            && callable
+            && let Some(r) = mod_event_ref(sema, tok)
+            && names_callable(sema, &r, def)
         {
             out.push(Highlight { range: r.name_range, write: false });
             continue;

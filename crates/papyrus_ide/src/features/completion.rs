@@ -159,6 +159,10 @@ impl<'s, 'a> Ctx<'s, 'a> {
             self.add_states(&state);
             return self.out;
         }
+        if let Some(event) = crate::mod_events::mod_event_at(self.sema, self.offset) {
+            self.add_mod_event(&event);
+            return self.out;
+        }
         if self.in_comment_or_string() {
             return self.out;
         }
@@ -213,6 +217,42 @@ impl<'s, 'a> Ctx<'s, 'a> {
             );
             item.replace_range = state.name_range;
             item.detail = script.map(|s| format!("State {} ({s})", decl.name));
+        }
+    }
+
+    /// What a string of the custom events can name: for a callback, the events
+    /// written for the object, not those of the game; else the events the other
+    /// scripts name.
+    fn add_mod_event(&mut self, event: &crate::mod_events::ModEventRef<'a>) {
+        use crate::mod_events::{ModEventUse, callables, is_event, sites};
+        let ws = self.sema.ws;
+        if event.usage == ModEventUse::Callback {
+            let mut seen: Vec<Name> = Vec::new();
+            for decl in callables(self.sema, event) {
+                let mine =
+                    decl.distance == 0 || ws.file(decl.file).origin == crate::Origin::Workspace;
+                if !mine || !is_event(self.sema, &decl) || seen.contains(&decl.name) {
+                    continue;
+                }
+                seen.push(decl.name);
+                let signature = self.sema.member(decl.file, decl.index).signature();
+                let item = self.push(decl.name.as_str(), CompletionKind::Event, decl.distance + 1);
+                item.replace_range = event.name_range;
+                item.detail = Some(signature);
+            }
+            return;
+        }
+        let mut seen: Vec<String> = Vec::new();
+        for site in sites(ws) {
+            let here = site.file == self.sema.file && site.range == event.name_range;
+            let key = site.name.to_ascii_lowercase();
+            if here || seen.contains(&key) {
+                continue;
+            }
+            seen.push(key);
+            let item = self.push(site.name.clone(), CompletionKind::Event, 1);
+            item.replace_range = event.name_range;
+            item.detail = Some(format!("mod event ({})", ws.file(site.file).index.name_str()));
         }
     }
 

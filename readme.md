@@ -123,7 +123,7 @@ final-newline = true            # true | false
 as = "As"
 ```
 
-`Papyrus: Create papyrus.toml` writes a commented template.
+`Papyrus: Create papyrus.toml` writes a template, with the `$schema` of the version of the server: the editor documents and completes the settings.
 
 ### Variables
 
@@ -205,7 +205,7 @@ papyrus_analyzer lint --list
 papyrus_analyzer lint -D warnings -A style --fix Scripts/Source
 ```
 
-Like `cargo fix`, `--fix` refuses scripts with uncommitted changes and to run outside of a git repository: `--allow-dirty` · `--allow-staged` · `--allow-no-vcs` let it. Fixes that are guesses (the closest name of `unknown-state`) need `--allow-manual-fixes`.
+Fixes that are guesses (the closest name of the `unknown-*` lints) need `--allow-manual-fixes`. With `--check-vcs`, `--fix` works like `cargo fix`: it refuses scripts with uncommitted changes and to run outside of a git repository, unless `--allow-dirty` · `--allow-staged` · `--allow-no-vcs` let it.
 
 ### Attributes
 

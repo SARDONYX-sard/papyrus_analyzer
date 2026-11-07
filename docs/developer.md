@@ -54,6 +54,7 @@ Tests (`cargo test`):
 | -------------------------------------------- | -------------------------------------------------------------------------------- | ---------------- |
 | `tests/corpus`                               | scripts compiled by the official compiler (git submodule)                        | read-only        |
 | `tests/fmt`                                  | `input.psc` → `expected.psc`, the formatter fixture                              | the tests        |
+| `tests/papyrus.toml`                         | the workspace of the playground: the settings it inherits                        | anyone, any time |
 | `tests/playground`                           | a project (`papyrus.toml`) to try the extension and the CLI on; no test reads it | anyone, any time |
 | `tests/playground/src/Base.psc`, `Child.psc` | compiler features, `Parent`                                                      | anyone, any time |
 | `tests/playground/src/Lints.psc`             | each lint and the attributes, silenced by its first line                         | anyone, any time |

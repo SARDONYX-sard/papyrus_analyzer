@@ -1,0 +1,30 @@
+"$schema" = "../schemas/papyrus.schema.json"
+
+[workspace]
+members = ["playground"]
+
+[workspace.var]
+SKYRIM_DIR = "${game:SkyrimSE}"
+
+[workspace.compiler]
+args = []
+
+[workspace.build]
+imports  = ["${SKYRIM_DIR}/Data/Scripts/Source"]
+flags    = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"
+optimize = true
+release  = false
+final    = false
+quiet    = true
+
+[workspace.lints]
+complexity   = "warn"
+unused-local = "deny"
+pedantic     = "deny"
+
+[workspace.format]
+indent-style  = "space"
+indent-size   = 4
+newline       = "lf"
+final-newline = true
+keyword-case  = "canonical"

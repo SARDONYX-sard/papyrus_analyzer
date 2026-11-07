@@ -134,7 +134,7 @@ pub(crate) struct CompileCommand {
     pub(crate) command_line: String,
 }
 
-/// `papyrus/manifestTemplate`: a commented `papyrus.toml` to start from.
+/// `papyrus/manifestTemplate`: a `papyrus.toml` to start from.
 pub(crate) enum ManifestTemplate {}
 
 impl Request for ManifestTemplate {

@@ -249,19 +249,10 @@ impl FormatSettings {
     }
 }
 
-/// The `[lints]` table: `name = "level"` or `name = { level = "level" }`, by
-/// lint, group or `all`, as in the `[lints]` of `Cargo.toml`.
-fn lint_settings(
-    raw: &BTreeMap<String, Spanned<toml::Value>>,
-    errors: &mut Vec<ManifestError>,
-) -> papyrus_lint::LintConfig {
-    let mut config = papyrus_lint::LintConfig::default();
-    lint_settings_into(&mut config, raw, errors);
-    config
-}
-
 /// Adds the settings of a `[lints]` table to `config`: they win over the
-/// ones already there (of the workspace).
+/// ones already there (of the workspace). `name = "level"` or
+/// `name = { level = "level" }`, by lint, group or `all`, as in the `[lints]` of
+/// `Cargo.toml`.
 pub(crate) fn lint_settings_into(
     config: &mut papyrus_lint::LintConfig,
     raw: &BTreeMap<String, Spanned<toml::Value>>,
@@ -288,8 +279,9 @@ pub(crate) fn lint_settings_into(
     }
 }
 
-/// Reads only the `[lints]` table of a manifest; like [`load_format`], it
-/// needs no variables.
+/// Reads only the lint levels of a manifest: `[workspace.lints]` of its
+/// workspace, then its `[lints]`. Like [`load_format`], the values need no
+/// variables.
 pub fn load_lints(manifest_path: &Path) -> Result<papyrus_lint::LintConfig, Vec<ManifestError>> {
     let text = std::fs::read_to_string(manifest_path).map_err(|e| {
         vec![ManifestError::new(format!("cannot read {}: {e}", manifest_path.display()), None)]
@@ -297,7 +289,13 @@ pub fn load_lints(manifest_path: &Path) -> Result<papyrus_lint::LintConfig, Vec<
     let raw: RawManifest = toml::from_str(&text)
         .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span())])?;
     let mut errors = Vec::new();
-    let config = lint_settings(&raw.lints, &mut errors);
+    let mut config = papyrus_lint::LintConfig::default();
+    if let Some((root, ws)) = workspace::workspace_of(manifest_path) {
+        let mut inherited = Vec::new();
+        lint_settings_into(&mut config, &ws.lints, &mut inherited);
+        errors.extend(inherited.into_iter().map(|e| e.in_file(&root)));
+    }
+    lint_settings_into(&mut config, &raw.lints, &mut errors);
     if errors.is_empty() { Ok(config) } else { Err(errors) }
 }
 
@@ -569,13 +567,22 @@ pub fn load(manifest_path: &Path, vars: &Variables) -> Result<Project, Vec<Manif
     parse(manifest_path, &text, local.as_deref(), vars)
 }
 
-/// Reads only the `[format]` table of a manifest. Unlike [`load`], this does
-/// not need the variables to be defined, so formatting works on any machine.
+/// Reads only the formatter settings of a manifest: `[workspace.format]` of its
+/// workspace, then its `[format]`. Unlike [`load`], this does not need the
+/// variables to be defined, so formatting works on any machine.
 pub fn load_format(manifest_path: &Path) -> Result<FormatSettings, Vec<ManifestError>> {
     let text = std::fs::read_to_string(manifest_path).map_err(|e| {
         vec![ManifestError::new(format!("cannot read {}: {e}", manifest_path.display()), None)]
     })?;
-    parse_format(&text)
+    let own = parse_format(&text)?;
+    let Some((root, ws)) = workspace::workspace_of(manifest_path) else { return Ok(own) };
+    let mut errors = Vec::new();
+    let mut settings = format_settings(&ws.format, &mut errors);
+    if !errors.is_empty() {
+        return Err(errors.into_iter().map(|e| e.in_file(&root)).collect());
+    }
+    settings.merge(own);
+    Ok(settings)
 }
 
 /// Parses only the `[format]` table of manifest text.
@@ -1036,11 +1043,13 @@ fn collect_scripts(dir: &Path, skipped: &[PathBuf], out: &mut Vec<PathBuf>) {
         }
     }
 }
-/// A commented manifest to start from.
-pub const TEMPLATE: &str = r#"# papyrus.toml — shared with your team. Paths: relative to this file.
-# Machine paths → ${NAME} variables, first wins:
-#   papyrus.var setting | --var NAME=VALUE  >  papyrus.local.toml [var] (not committed)  >  [var] below
-# Built-ins: ${env:NAME} · ${workspaceFolder} · ${game:SkyrimSE | SkyrimLE | SkyrimVR | Enderal | EnderalSE} (registry, Windows)
+/// A manifest to start from. Its `$schema` is the one of the release `version`;
+/// the schema documents the settings, in the editor.
+pub fn template(version: &str) -> String {
+    TEMPLATE.replace("{VERSION}", version)
+}
+
+const TEMPLATE: &str = r#""$schema" = "https://raw.githubusercontent.com/SARDONYX-sard/papyrus_analyzer/refs/tags/{VERSION}/schemas/papyrus.schema.json"
 
 [package]
 name = "MyMod"
@@ -1049,60 +1058,27 @@ version = "0.1.0"
 [var]
 SKYRIM_DIR = "${game:SkyrimSE}"
 
-[compiler]                      # no path → built-in compiler
+[compiler]
 path = "${SKYRIM_DIR}/Papyrus Compiler/PapyrusCompiler.exe"
-args = []                       # extra arguments, as is
+args = []
 
 [build]
-sources = ["."]                 # script dirs, recursive
-output = "output"               # .pex, same tree as sources
-imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]                     # lookup order, after sources
-flags = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"  # Hidden, Conditional, ...
+sources = ["."]
+output = "output"
+imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]
+flags = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"
 optimize = true
-release = false                 # strip DebugOnly
-final = false                   # strip BetaOnly
-quiet = true                    # errors only
+release = false
+final = false
+quiet = true
 
-[test]                          # papyrus_analyzer test: ; #[test] functions, PapyrusAnalyzer.Assert* built in
-# sources = ["tests"]           # not built; a test script extends the script it tests
+[test]
 
-[dependencies]                  # projects whose sources this one sees
-# MCMHelper = { path = "../MCMHelper" }
+[dependencies]
 
-[lints]                         # lint | group | "all" = "allow" | "warn" | "deny"
-# complexity = "allow"          # groups: correctness · suspicious · complexity · style · pedantic
-# unused-local = "deny"         # lints: papyrus_analyzer lint --list
+[lints]
 
-[format]                        # unset → .editorconfig → editor
-# indent-style = "space"        # space | tab
-# indent-size = 4
-# max-blank-lines = 1
-# max-width = 0                # > 0: longer lines break with \, long attributes split; 0: as written
-# newline = "auto"              # auto | lf | crlf
-# final-newline = true
-#
-# Cases: canonical | preserve | PascalCase | camelCase | lowercase | UPPERCASE
-#   names: canonical = as defined (actor → Actor), the others start from it
-# keyword-case = "canonical"
-# script-case = "canonical"     # types · extends · Import · Debug.Trace
-# function-case = "canonical"   # functions · events
-# property-case = "canonical"
-# variable-case = "canonical"   # locals · parameters · script variables
-# flag-case = "canonical"       # Hidden · Conditional
-#
-# [format.keywords]             # one keyword, case only; wins over keyword-case
-# as = "As"
-
-# Several projects, like Cargo workspaces → in the papyrus.toml of the parent folder.
-# Members inherit; own values win (imports appended). A member sees its sources + dependencies + imports.
-# [workspace]
-# members = ["*"]               # "dir" | "dir/*" (subdirs with a papyrus.toml); ${NAME} allowed
-# exclude = []
-# [workspace.var]
-# [workspace.compiler]          # path · args
-# [workspace.build]             # imports · flags · optimize · release · final · quiet
-# [workspace.lints]
-# [workspace.format]
+[format]
 "#;
 
 /// A `papyrus.local.toml` to start from.
@@ -1144,7 +1120,9 @@ mod tests {
 
     #[test]
     fn template_resolves() {
-        let p = parse(Path::new("/mods/my/papyrus.toml"), TEMPLATE, None, &vars()).unwrap();
+        let text = template("1.2.3");
+        assert!(text.contains("/refs/tags/1.2.3/schemas/papyrus.schema.json"), "{text}");
+        let p = parse(Path::new("/mods/my/papyrus.toml"), &text, None, &vars()).unwrap();
         assert_eq!(p.name.as_deref(), Some("MyMod"));
         assert_eq!(
             s(p.compiler.as_deref().unwrap()),
@@ -1241,7 +1219,8 @@ mod tests {
     #[test]
     fn compile_commands() {
         let p =
-            parse_str(&TEMPLATE.replace(r#"sources = ["."]"#, r#"sources = ["papyrus"]"#)).unwrap();
+            parse_str(&template("1.2.3").replace(r#"sources = ["."]"#, r#"sources = ["papyrus"]"#))
+                .unwrap();
         let cmd = p.compile_file(Path::new("/m/papyrus/Foo.psc")).unwrap();
         let args: Vec<String> = cmd.args.iter().map(|a| a.replace('\\', "/")).collect();
         assert_eq!(
@@ -1317,6 +1296,20 @@ mod tests {
         assert_eq!(
             ws.member_for(&dir.join("mods/Lib/A.psc")).unwrap().name.as_deref(),
             Some("Lib")
+        );
+        // Without the variables too, as the command line lint and format do.
+        let manifest = dir.join("mods/App/papyrus.toml");
+        let lints = load_lints(&manifest).unwrap();
+        let cli_level = |code| lints.level(papyrus_lint::find(code).unwrap());
+        assert_eq!(cli_level("unused-local"), papyrus_lint::Level::Allow);
+        assert_eq!(cli_level("unreachable-code"), papyrus_lint::Level::Deny);
+        let format = load_format(&manifest).unwrap();
+        assert_eq!((format.use_tabs, format.indent_size), (Some(true), Some(2)));
+        let excluded = dir.join("mods/Old/papyrus.toml");
+        let old = load_lints(&excluded).unwrap();
+        assert_eq!(
+            old.level(papyrus_lint::find("unreachable-code").unwrap()),
+            papyrus_lint::Level::Warn
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

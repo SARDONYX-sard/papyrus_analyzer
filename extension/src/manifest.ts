@@ -7,7 +7,7 @@ import { settings } from "./settings";
 import { runningClient } from "./state";
 import { updateStatus } from "./statusBar";
 
-/** `papyrus.createManifest`: writes a commented `papyrus.toml` into the first workspace folder. */
+/** `papyrus.createManifest`: writes a `papyrus.toml` into the first workspace folder. */
 export async function createManifest(): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   const client = runningClient();

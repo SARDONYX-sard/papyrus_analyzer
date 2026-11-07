@@ -123,11 +123,20 @@ pub struct Lint {
 pub const LINTS: &[Lint] = &[
     lints::index_out_of_bounds::LINT,
     lints::unknown_state::LINT,
+    lints::unknown_event::LINT,
+    lints::unknown_mod_callback::LINT,
+    lints::unknown_mod_event::LINT,
     lints::unused_local::LINT,
+    lints::unused_import::LINT,
+    lints::unused_script_variable::LINT,
     lints::unreachable_code::LINT,
+    lints::repeating_update::LINT,
     lints::bool_literal_comparison::LINT,
+    lints::self_assignment::LINT,
+    lints::redundant_cast::LINT,
     lints::unchecked_none::CAST,
     lints::unchecked_none::CALL,
+    lints::get_player_in_loop::LINT,
 ];
 
 /// The lint named `code`.

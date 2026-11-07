@@ -2,8 +2,20 @@
 ScriptName Lints extends ObjectReference
 {One sample of each lint (`papyrus_analyzer lint --list`), then the attributes
 that allow them. Hover the attributes, complete them after `(` or `,`.
-The pedantic lints (unchecked_*) are allowed by default: enable them in [lints]
-of papyrus.toml.}
+The pedantic lints (unchecked_*, get_player_in_loop) are allowed by default: enable
+them in [lints] of papyrus.toml. The lints about the game (unknown-event,
+repeating-update, get-player-in-loop) need its scripts: the imports of papyrus.toml.}
+
+; unused-import (suspicious): an Import whose global functions are never called:
+; every call here is written `Debug.Trace`. Quick fix: remove it.
+Import Debug
+
+; unused-script-variable (suspicious): a script variable whose value is never read.
+Int NeverRead
+
+Function UnusedScriptVariable()
+    NeverRead = 1
+EndFunction
 
 ; index-out-of-bounds (correctness, deny): a constant index outside of an
 ; array of known length.
@@ -35,6 +47,29 @@ EndFunction
 State Waiting
 EndState
 
+; unknown-event (suspicious): an event spelled almost like one of the parents, and
+; that nothing refers to: the game never sends it. Quick fix: the closest name.
+Event OnActivte(ObjectReference akActionRef) ; warning: did you mean `OnActivate`?
+    Debug.Trace("never")
+EndEvent
+
+; A new event, not close to any: fine.
+Event OnMyModEvent(String asName, String asArg, Float afArg, Form akSender)
+    Debug.Trace(asName)
+EndEvent
+
+; unknown-mod-callback, unknown-mod-event (suspicious, SKSE): the strings of custom
+; events. Inside the quotes: completion. Hover the names: who registers and sends
+; them; go to definition goes from one to the other. The callback: hover, go to
+; definition, references, rename, like the name of `OnMyModEvent` above.
+Function ModEvents()
+    RegisterForModEvent("MyModEvent", "OnMyModEvent") ; fine
+    SendModEvent("MyModEvent")                        ; fine
+    RegisterForModEvent("MyOther", "OnMyModEvnt")     ; warning: did you mean `OnMyModEvent`?
+    RegisterForModEvent("Finishd", "OnMyModEvent")    ; warning: did you mean `Finished`?
+    SendModEvent("Finished")                          ; warning: did you mean `Finishd`?
+EndFunction
+
 ; unused-local (suspicious): a local variable whose value is never read.
 ; Quick fix: remove it. Denied by `unused-local = "deny"` in this papyrus.toml.
 Function UnusedLocal()
@@ -47,12 +82,32 @@ Int Function UnreachableCode()
     Debug.Trace("never")
 EndFunction
 
+; repeating-update (suspicious): updates come whether the last one is done or not.
+Function RepeatingUpdate()
+    RegisterForUpdate(1.0)       ; warning
+    RegisterForSingleUpdate(1.0) ; fine: register again at the end of OnUpdate
+EndFunction
+
 ; bool-literal-comparison (complexity): a comparison with True or False.
 ; Quick fix: `If abFlag`. Allowed by `complexity = "warn"` in this papyrus.toml.
 Function BoolLiteralComparison(Bool abFlag)
     If abFlag == True
         Debug.Trace("flag")
     EndIf
+EndFunction
+
+; self-assignment (complexity): a variable assigned to itself. Quick fix: remove it.
+Function SelfAssignment(Int aiCount)
+    aiCount = aiCount
+EndFunction
+
+; redundant-cast (complexity): a cast to the type the value already has.
+; Quick fix: remove it.
+Function RedundantCast(Actor akActor)
+    Actor same = akActor as Actor   ; warning
+    (same as Actor).Kill()          ; warning
+    ObjectReference up = akActor as ObjectReference ; fine: another type
+    Debug.Trace(up)
 EndFunction
 
 ; unchecked-cast (pedantic): the result of a cast used without checking None.
@@ -69,6 +124,15 @@ EndFunction
 ; checking None.
 Function UncheckedCallResult()
     GetLinkedRef().Disable()
+EndFunction
+
+; get-player-in-loop (pedantic): a variable set before the loop needs no call.
+Function GetPlayerInLoop()
+    Int i = 0
+    While i < 3
+        Game.GetPlayer().Kill()
+        i += 1
+    EndWhile
 EndFunction
 
 ; #[allow(unused_local)] outer attribute: the whole function below

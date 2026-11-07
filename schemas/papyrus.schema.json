@@ -45,7 +45,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "description": "Path of PapyrusCompiler.exe."
+          "description": "Path of PapyrusCompiler.exe. Without it, the built-in compiler is used."
         },
         "args": {
           "type": "array",
@@ -189,6 +189,42 @@
         "bool-literal-comparison": {
           "$ref": "#/properties/lints/definitions/level",
           "description": "complexity: a comparison with True or False."
+        },
+        "unknown-event": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: an event spelled almost like one of the parents, probably a typo."
+        },
+        "unknown-mod-callback": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: RegisterForModEvent with a callback declared nowhere."
+        },
+        "unknown-mod-event": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: a custom event one typo away from another one, nothing connecting them."
+        },
+        "unused-import": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: an Import whose global functions are never called."
+        },
+        "unused-script-variable": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: a script variable whose value is never read."
+        },
+        "repeating-update": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "suspicious: RegisterForUpdate, whose updates can pile up."
+        },
+        "self-assignment": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "complexity: a variable assigned to itself."
+        },
+        "redundant-cast": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "complexity: a cast to the type the value already has."
+        },
+        "get-player-in-loop": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "pedantic: Game.GetPlayer() called in a loop."
         }
       }
     },
@@ -347,7 +383,7 @@
         "sources": {
           "type": "array",
           "items": { "type": "string" },
-          "markdownDescription": "Directories of tests: `; #[test]` functions. Their scripts see the built-in `PapyrusAnalyzer` script (`PapyrusAnalyzer.AssertIntEq(...)`, or `Import PapyrusAnalyzer`). Run by `papyrus_analyzer test`, never compiled into `output`."
+          "markdownDescription": "Directories of tests: `; #[test]` functions. Their scripts see the built-in `PapyrusAnalyzer` script (`PapyrusAnalyzer.AssertIntEq(...)`, or `Import PapyrusAnalyzer`). A test script extends the script it tests. Run by `papyrus_analyzer test`, never compiled into `output`."
         }
       }
     },

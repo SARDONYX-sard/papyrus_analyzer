@@ -71,7 +71,7 @@ export const CompileCommandsRequest = new RequestType<
   void
 >("papyrus/compileCommands");
 
-/** `papyrus/manifestTemplate`: a commented `papyrus.toml` to start from. */
+/** `papyrus/manifestTemplate`: a `papyrus.toml` to start from. */
 export const ManifestTemplateRequest = new RequestType0<string, void>("papyrus/manifestTemplate");
 
 /** `papyrus/decompile`: the source of a `.pex` file, or its assembly. */
