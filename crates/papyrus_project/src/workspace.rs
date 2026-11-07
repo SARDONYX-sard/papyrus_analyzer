@@ -9,8 +9,17 @@
 //! [workspace.var]                   # variables of every member
 //! [workspace.compiler]              # defaults of `[compiler]`
 //! [workspace.build]                 # defaults of `[build]`: imports (added after the member's), flags, ...
-//! [workspace.lints]                 # applied before the `[lints]` of the member
-//! [workspace.format]                # overridden by the `[format]` of the member
+//! [workspace.lints]                 # for the `[lints]` with `workspace = true`
+//! [workspace.format]                # for the `[format]` with `workspace = true`
+//! ```
+//!
+//! Like in `Cargo.toml`, a member chooses to use these two tables, and then sets
+//! nothing else in its own: the rest is an error, as `false` is, and as having
+//! nothing to inherit is.
+//!
+//! ```toml
+//! [lints]
+//! workspace = true
 //! ```
 //!
 //! A member lists the projects it uses in `[dependencies]`, by path:
@@ -54,10 +63,8 @@ pub(crate) struct RawWorkspace {
     compiler: RawCompiler,
     #[serde(default)]
     build: RawWorkspaceBuild,
-    #[serde(default)]
-    pub(crate) lints: BTreeMap<String, Spanned<toml::Value>>,
-    #[serde(default)]
-    pub(crate) format: RawFormat,
+    pub(crate) lints: Option<BTreeMap<String, Spanned<toml::Value>>>,
+    pub(crate) format: Option<RawFormat>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -96,8 +103,10 @@ pub(crate) struct Inherited {
     pub(crate) release: Option<bool>,
     pub(crate) r#final: Option<bool>,
     pub(crate) quiet: Option<bool>,
-    pub(crate) lints: papyrus_lint::LintConfig,
-    pub(crate) format: FormatSettings,
+    /// `[workspace.lints]`, when there is one.
+    pub(crate) lints: Option<papyrus_lint::LintConfig>,
+    /// `[workspace.format]`, when there is one.
+    pub(crate) format: Option<FormatSettings>,
 }
 
 /// The projects of a workspace manifest, or the one project of a manifest
@@ -159,6 +168,19 @@ pub fn load_workspace_with(
     let raw: crate::RawManifest = toml::from_str(&text)
         .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span()).in_file(&root)])?;
     let Some(ws) = raw.workspace else {
+        // Asking for the tables of a workspace, without any.
+        let asking = [
+            crate::lints_inherit(&raw.lints).then_some("lints"),
+            raw.format.inherits().then_some("format"),
+        ];
+        let errors: Vec<ManifestError> = asking
+            .into_iter()
+            .flatten()
+            .map(|table| crate::cannot_inherit(table, crate::NO_WORKSPACE).in_file(&root))
+            .collect();
+        if !errors.is_empty() {
+            return Err(errors);
+        }
         let mut project = crate::parse(&root, &text, read_local(&root).as_deref(), vars)?;
         resolve_dependencies(std::slice::from_mut(&mut project), vars)?;
         return Ok(ProjectWorkspace { manifest_path: root, members: vec![project] });
@@ -274,9 +296,20 @@ fn inherited(
     let compiler = ws.compiler.path.as_ref().and_then(&mut path);
     let imports: Vec<PathBuf> = ws.build.imports.iter().filter_map(&mut path).collect();
     let flags = ws.build.flags.as_ref().and_then(&mut path);
-    let mut lints = papyrus_lint::LintConfig::default();
-    lint_settings_into(&mut lints, &ws.lints, dir, &mut errors);
-    let format = format_settings(&ws.format, dir, &mut errors);
+    let asks_itself = ws.lints.as_ref().is_some_and(|l| l.contains_key("workspace"))
+        || ws.format.as_ref().is_some_and(|f| f.workspace.is_some());
+    if asks_itself {
+        errors.push(ManifestError::new(
+            "`workspace` belongs to the `[lints]` and `[format]` of the members",
+            None,
+        ));
+    }
+    let lints = ws.lints.as_ref().map(|raw| {
+        let mut config = papyrus_lint::LintConfig::default();
+        lint_settings_into(&mut config, raw, dir, &mut errors);
+        config
+    });
+    let format = ws.format.as_ref().map(|raw| format_settings(raw, dir, &mut errors));
     if !errors.is_empty() {
         return Err(errors.into_iter().map(|e| e.in_file(root)).collect());
     }

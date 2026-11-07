@@ -72,60 +72,22 @@ Optional. The two modes:
 | Diagnostics | every source script               | open scripts only                                    |
 
 ```toml
+"$schema" = "https://raw.githubusercontent.com/SARDONYX-sard/papyrus_analyzer/refs/tags/0.2.2/schemas/papyrus.schema.json"
+
 [package]
-name = "MyMod"
+name    = "MyMod"
 version = "0.1.0"
 
-[var]                           # NAME = "value", used as ${NAME}
+[var]
 SKYRIM_DIR = "${game:SkyrimSE}"
 
-[compiler]
-path = "${SKYRIM_DIR}/Papyrus Compiler/PapyrusCompiler.exe"   # unset → built-in compiler
-args = []                       # extra arguments, passed as is
-
-[build]                         # relative paths → relative to this file
-sources = ["."]                 # script directories, searched recursively
-output = "output"               # .pex files (decompiled: output/decompile)
-imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]   # lookup order, after sources
-flags = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"   # required by PapyrusCompiler.exe; unset → built-in Skyrim flags
-optimize = true                 # true | false
-release = false                 # true | false — strip DebugOnly calls
-final = false                   # true | false — strip BetaOnly calls
-quiet = true                    # true | false — errors only
-
-[test]
-sources = ["tests"]             # test scripts: see the built-in PapyrusAnalyzer, never compiled into output
-
-[dependencies]                  # other projects whose sources this one sees
-MCMHelper = { path = "../MCMHelper" }
-
-[lints]                         # lint name | group | "all" = level
-exclude = ["src/vendor"]        # scripts without lint problems nor fixes: * ? ** ; a workspace and its members add up
-all = "warn"                    # "allow" | "warn" | "deny"
-complexity = "allow"            # group: correctness | suspicious | complexity | style | pedantic
-unused-local = { level = "deny" }   # "level" | { level = "level" }
-
-[format]                        # unset → .editorconfig → editor settings
-exclude = ["**/*_gen.psc"]      # scripts left as they are
-indent-style = "space"          # "space" | "tab"
-indent-size = 4                 # 1..=16
-keyword-case = "canonical"      # "canonical" | "preserve" | "PascalCase" | "camelCase" | "lowercase" | "UPPERCASE"
-# Names: same values; "canonical" = as defined, the other cases start from the definition
-script-case = "canonical"       # actor → Actor (its ScriptName)
-function-case = "canonical"     # getvalue() → GetValue(), event oninit() → the overridden OnInit
-property-case = "canonical"
-variable-case = "canonical"     # locals, parameters, script variables
-flag-case = "canonical"         # hidden → Hidden (the flags file)
-max-blank-lines = 1
-max-width = 0                   # > 0: longer lines break with \ (after , | before && ||), long attributes split · 0: as written
-newline = "auto"                # "auto" | "lf" | "crlf"
-final-newline = true            # true | false
-
-[format.keywords]               # spelling of single keywords; case only, wins over keyword-case
-as = "As"
+[build]
+sources = ["."]
+imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]
+flags   = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"
 ```
 
-`Papyrus: Create papyrus.toml` writes a template, with the `$schema` of the version of the server: the editor documents and completes the settings.
+`$schema` documents and completes every setting in the editor: use [Tombi](https://github.com/tombi-toml/tombi) or [TOML Analyzer](https://github.com/Thoughts-with-friends/toml_analyzer). `Papyrus: Create papyrus.toml` writes a template, with the `$schema` of the version of the server.
 
 ### Variables
 
@@ -158,27 +120,29 @@ my-mods/
 ```toml
 # my-mods/papyrus.toml
 [workspace]
-members = ["*"]                 # "dir" | "dir/*" (subdirectories with a papyrus.toml); ${NAME} allowed
-exclude = ["Old"]               # same as members
+members = ["*"]
 
-[workspace.var]                 # variables of every member
-SKYRIM_DIR = "C:/Games/Skyrim Special Edition"
+[workspace.var]
+SKYRIM_DIR = "${game:SkyrimSE}"
 
-[workspace.compiler]            # path | args — defaults of every member
-[workspace.build]               # imports | flags | optimize | release | final | quiet
-imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]   # appended after the member's
-flags = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"
+[workspace.build]
+imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]
 
-[workspace.lints]               # applied before the member's [lints]
+[workspace.lints]
 style = "allow"
-
-[workspace.format]              # overridden by the member's [format]
 ```
 
-| Workspace table                                               | Member                                       |
-| ------------------------------------------------------------- | -------------------------------------------- |
-| `[workspace.var]` · `compiler` · `build` · `lints` · `format` | inherited; own values win (imports appended) |
-| `members` · `exclude`                                         | may use variables                            |
+```toml
+# my-mods/Requiem/papyrus.toml
+[lints]
+workspace = true
+```
+
+| Workspace table                            | Member                                                          |
+| ------------------------------------------ | --------------------------------------------------------------- |
+| `[workspace.var]` · `compiler` · `build`   | inherited; own values win (imports appended)                    |
+| `[workspace.lints]` · `[workspace.format]` | only with `workspace = true`, alone in the table: like in Cargo |
+| `members` · `exclude`                      | may use variables                                               |
 
 - A member sees its sources + `[dependencies]` (transitively) + imports, nothing else — like the compiler:
   - `MCM` in Requiem → `MCMHelper/…/MCM.psc` ✓
@@ -207,7 +171,7 @@ papyrus_analyzer lint --list
 papyrus_analyzer lint -D warnings -A style --fix Scripts/Source
 ```
 
-Fixes that are guesses (the closest name of the `unknown-*` lints) need `--allow-manual-fixes`. With `--check-vcs`, `--fix` works like `cargo fix`: it refuses scripts with uncommitted changes and to run outside of a git repository, unless `--allow-dirty` · `--allow-staged` · `--allow-no-vcs` let it.
+Fixes that change what the code does need `--allow-manual-fixes`. With `--check-vcs`, `--fix` works like `cargo fix`: it refuses scripts with uncommitted changes and to run outside of a git repository, unless `--allow-dirty` · `--allow-staged` · `--allow-no-vcs` let it.
 
 ### Attributes
 

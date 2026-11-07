@@ -160,6 +160,67 @@ struct RawFormat {
     final_newline: Option<bool>,
     #[serde(default)]
     exclude: Vec<Spanned<String>>,
+    /// `workspace = true`: starts from `[workspace.format]`.
+    #[serde(default)]
+    workspace: Option<Spanned<bool>>,
+}
+
+impl RawFormat {
+    fn inherits(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|w| *w.get_ref())
+    }
+
+    /// Whether the table sets anything but `workspace`.
+    fn has_own_values(&self) -> bool {
+        self.indent_style.is_some()
+            || self.indent_size.is_some()
+            || self.keyword_case.is_some()
+            || !self.keywords.is_empty()
+            || self.script_case.is_some()
+            || self.function_case.is_some()
+            || self.property_case.is_some()
+            || self.variable_case.is_some()
+            || self.flag_case.is_some()
+            || self.max_blank_lines.is_some()
+            || self.max_width.is_some()
+            || self.newline.is_some()
+            || self.final_newline.is_some()
+            || !self.exclude.is_empty()
+    }
+}
+
+/// Whether a `[lints]` table has `workspace = true`: it is `[workspace.lints]`,
+/// like in `Cargo.toml`.
+pub(crate) fn lints_inherit(raw: &BTreeMap<String, Spanned<toml::Value>>) -> bool {
+    raw.get("workspace").is_some_and(|w| w.get_ref().as_bool() == Some(true))
+}
+
+/// `workspace = true` with other values of the `table`, as `cargo` says it.
+fn cannot_override(table: &str, span: Option<Range<usize>>) -> ManifestError {
+    ManifestError::new(
+        format!(
+            "cannot override `workspace.{table}` in `{table}`, either remove the overrides or `{table}.workspace = true` and manually specify the {table} settings"
+        ),
+        span,
+    )
+}
+
+/// `workspace = true` when there is nothing to inherit, as `cargo` says it.
+pub(crate) fn cannot_inherit(table: &str, why: &str) -> ManifestError {
+    ManifestError::new(
+        format!(
+            "error inheriting `{table}` from workspace root manifest's `workspace.{table}`: {why}"
+        ),
+        None,
+    )
+}
+
+/// [`cannot_inherit`], without workspace.
+pub(crate) const NO_WORKSPACE: &str = "failed to find a workspace root";
+
+/// [`cannot_inherit`], without the table.
+pub(crate) fn not_defined(table: &str) -> ManifestError {
+    cannot_inherit(table, &format!("`workspace.{table}` was not defined"))
 }
 
 /// The `[format]` table: formatter settings shared by the team. Unset values
@@ -191,23 +252,6 @@ pub struct FormatSettings {
 }
 
 impl FormatSettings {
-    /// Takes the values set in `other`, keeping the others (the ones of a
-    /// workspace under the ones of a member).
-    pub(crate) fn merge(&mut self, other: FormatSettings) {
-        self.use_tabs = other.use_tabs.or(self.use_tabs);
-        self.indent_size = other.indent_size.or(self.indent_size);
-        self.keyword_case = other.keyword_case.or(self.keyword_case);
-        self.keywords.extend(other.keywords);
-        for (mine, theirs) in self.name_cases.iter_mut().zip(other.name_cases) {
-            *mine = theirs.or(*mine);
-        }
-        self.max_blank_lines = other.max_blank_lines.or(self.max_blank_lines);
-        self.max_width = other.max_width.or(self.max_width);
-        self.newline = other.newline.or(self.newline);
-        self.final_newline = other.final_newline.or(self.final_newline);
-        self.exclude.extend(other.exclude);
-    }
-
     /// Applies the set values to formatter options.
     pub fn apply(&self, options: &mut papyrus_fmt::FormatOptions) {
         let size = |options: &papyrus_fmt::FormatOptions| match options.indent {
@@ -266,6 +310,14 @@ pub(crate) fn lint_settings_into(
 ) {
     for (name, value) in raw {
         let span = Some(value.span()).filter(|r| !r.is_empty());
+        if name == "workspace" {
+            match value.get_ref().as_bool() {
+                Some(true) if raw.len() > 1 => errors.push(cannot_override("lints", span)),
+                Some(true) => {}
+                _ => errors.push(ManifestError::new("`workspace` cannot be false", span)),
+            }
+            continue;
+        }
         if name == "exclude" {
             let patterns = value.get_ref().as_array().and_then(|patterns| {
                 patterns.iter().map(toml::Value::as_str).collect::<Option<Vec<&str>>>()
@@ -312,9 +364,9 @@ fn check_exclude(pattern: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Reads only the lint settings of a manifest: `[workspace.lints]` of its
-/// workspace, then its `[lints]`. Like [`load_format`], the values need no
-/// variables.
+/// Reads only the lint settings of a manifest: its `[lints]`, or
+/// `[workspace.lints]` of its workspace with `workspace = true`. Like
+/// [`load_format`], the values need no variables.
 pub fn load_lints(manifest_path: &Path) -> Result<papyrus_lint::LintConfig, Vec<ManifestError>> {
     let text = std::fs::read_to_string(manifest_path).map_err(|e| {
         vec![ManifestError::new(format!("cannot read {}: {e}", manifest_path.display()), None)]
@@ -323,10 +375,17 @@ pub fn load_lints(manifest_path: &Path) -> Result<papyrus_lint::LintConfig, Vec<
         .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span())])?;
     let mut errors = Vec::new();
     let mut config = papyrus_lint::LintConfig::default();
-    if let Some((root, ws)) = workspace::workspace_of(manifest_path) {
-        let mut inherited = Vec::new();
-        lint_settings_into(&mut config, &ws.lints, parent_dir(&root), &mut inherited);
-        errors.extend(inherited.into_iter().map(|e| e.in_file(&root)));
+    if lints_inherit(&raw.lints) {
+        match workspace::workspace_of(manifest_path) {
+            None => errors.push(cannot_inherit("lints", NO_WORKSPACE)),
+            Some((_, ws)) if ws.lints.is_none() => errors.push(not_defined("lints")),
+            Some((root, ws)) => {
+                let mut inherited = Vec::new();
+                let lints = ws.lints.unwrap_or_default();
+                lint_settings_into(&mut config, &lints, parent_dir(&root), &mut inherited);
+                errors.extend(inherited.into_iter().map(|e| e.in_file(&root)));
+            }
+        }
     }
     lint_settings_into(&mut config, &raw.lints, parent_dir(manifest_path), &mut errors);
     if errors.is_empty() { Ok(config) } else { Err(errors) }
@@ -351,6 +410,13 @@ fn format_settings(
         final_newline: raw.final_newline,
         ..Default::default()
     };
+    if let Some(workspace) = &raw.workspace {
+        if !*workspace.get_ref() {
+            errors.push(ManifestError::new("`workspace` cannot be false", span(workspace.span())));
+        } else if raw.has_own_values() {
+            errors.push(cannot_override("format", span(workspace.span())));
+        }
+    }
     for pattern in &raw.exclude {
         match check_exclude(pattern.get_ref()) {
             Ok(()) => out.exclude.add(base, pattern.get_ref()),
@@ -617,21 +683,29 @@ pub fn load(manifest_path: &Path, vars: &Variables) -> Result<Project, Vec<Manif
     parse(manifest_path, &text, local.as_deref(), vars)
 }
 
-/// Reads only the formatter settings of a manifest: `[workspace.format]` of its
-/// workspace, then its `[format]`. Unlike [`load`], this does not need the
-/// variables to be defined, so formatting works on any machine.
+/// Reads only the formatter settings of a manifest: its `[format]`, or
+/// `[workspace.format]` of its workspace with `workspace = true`. Unlike
+/// [`load`], this does not need the variables to be defined, so formatting works
+/// on any machine.
 pub fn load_format(manifest_path: &Path) -> Result<FormatSettings, Vec<ManifestError>> {
     let text = std::fs::read_to_string(manifest_path).map_err(|e| {
         vec![ManifestError::new(format!("cannot read {}: {e}", manifest_path.display()), None)]
     })?;
+    let raw: RawManifest = toml::from_str(&text)
+        .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span())])?;
     let own = parse_format_in(&text, parent_dir(manifest_path))?;
-    let Some((root, ws)) = workspace::workspace_of(manifest_path) else { return Ok(own) };
+    if !raw.format.inherits() {
+        return Ok(own);
+    }
+    let Some((root, ws)) = workspace::workspace_of(manifest_path) else {
+        return Err(vec![cannot_inherit("format", NO_WORKSPACE)]);
+    };
+    let Some(format) = &ws.format else { return Err(vec![not_defined("format")]) };
     let mut errors = Vec::new();
-    let mut settings = format_settings(&ws.format, parent_dir(&root), &mut errors);
+    let settings = format_settings(format, parent_dir(&root), &mut errors);
     if !errors.is_empty() {
         return Err(errors.into_iter().map(|e| e.in_file(&root)).collect());
     }
-    settings.merge(own);
     Ok(settings)
 }
 
@@ -749,10 +823,26 @@ pub(crate) fn parse_with(
         .or_else(|| inherited.and_then(|i| i.flags.clone()));
     let mut extra_args: Vec<String> = inherited.map(|i| i.args.clone()).unwrap_or_default();
     extra_args.extend(raw.compiler.args.iter().map(|a| resolver.expand(a, None)));
-    let mut format = inherited.map(|i| i.format.clone()).unwrap_or_default();
-    format.merge(format_settings(&raw.format, &root, &mut resolver.errors));
-    let mut lints = inherited.map(|i| i.lints.clone()).unwrap_or_default();
+    // Like `Cargo.toml`: only the tables asking for it, which set nothing else.
+    let mut format = format_settings(&raw.format, &root, &mut resolver.errors);
+    if raw.format.inherits()
+        && let Some(i) = inherited
+    {
+        match &i.format {
+            Some(settings) => format = settings.clone(),
+            None => resolver.errors.push(not_defined("format")),
+        }
+    }
+    let mut lints = papyrus_lint::LintConfig::default();
     lint_settings_into(&mut lints, &raw.lints, &root, &mut resolver.errors);
+    if lints_inherit(&raw.lints)
+        && let Some(i) = inherited
+    {
+        match &i.lints {
+            Some(config) => lints = config.clone(),
+            None => resolver.errors.push(not_defined("lints")),
+        }
+    }
     let test_sources: Vec<PathBuf> = raw.test.sources.iter().map(|p| resolver.path(p)).collect();
     let dependencies: Vec<(String, PathBuf)> = raw
         .dependencies
@@ -1331,7 +1421,7 @@ mod tests {
         w("mods/Lib/papyrus.toml", "[package]\nname = \"Lib\"\n");
         w(
             "mods/App/papyrus.toml",
-            "[package]\nname = \"App\"\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nunused-local = \"allow\"\n[format]\nindent-style = \"tab\"\n",
+            "[package]\nname = \"App\"\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nworkspace = true\n[format]\nworkspace = true\n",
         );
         w("mods/Old/papyrus.toml", "[package]\nname = \"Old\"\n");
 
@@ -1349,23 +1439,29 @@ mod tests {
         );
         let lib = &ws.members[1];
         assert_eq!(lib.import_dirs(), [dir.join("mods/Lib"), dir.join("game")]);
-        // The member wins over the workspace.
+        // With `workspace = true`, the tables of the workspace.
         let level = |p: &Project, code| p.lints.level(papyrus_lint::find(code).unwrap());
-        assert_eq!(level(app, "unused-local"), papyrus_lint::Level::Allow);
         assert_eq!(level(app, "unreachable-code"), papyrus_lint::Level::Deny);
-        assert_eq!((app.format.use_tabs, app.format.indent_size), (Some(true), Some(2)));
+        assert_eq!(app.format.indent_size, Some(2));
         assert_eq!(
             ws.member_for(&dir.join("mods/Lib/A.psc")).unwrap().name.as_deref(),
             Some("Lib")
         );
+        // Without `workspace = true`, like in `Cargo.toml`: nothing of these tables.
+        assert_eq!(level(lib, "unreachable-code"), papyrus_lint::Level::Warn);
+        assert_eq!(lib.format.indent_size, None);
+        let on_its_own = load_lints(&dir.join("mods/Lib/papyrus.toml")).unwrap();
+        assert_eq!(
+            on_its_own.level(papyrus_lint::find("unreachable-code").unwrap()),
+            papyrus_lint::Level::Warn
+        );
+        assert_eq!(load_format(&dir.join("mods/Lib/papyrus.toml")).unwrap().indent_size, None);
         // Without the variables too, as the command line lint and format do.
         let manifest = dir.join("mods/App/papyrus.toml");
         let lints = load_lints(&manifest).unwrap();
         let cli_level = |code| lints.level(papyrus_lint::find(code).unwrap());
-        assert_eq!(cli_level("unused-local"), papyrus_lint::Level::Allow);
         assert_eq!(cli_level("unreachable-code"), papyrus_lint::Level::Deny);
-        let format = load_format(&manifest).unwrap();
-        assert_eq!((format.use_tabs, format.indent_size), (Some(true), Some(2)));
+        assert_eq!(load_format(&manifest).unwrap().indent_size, Some(2));
         let excluded = dir.join("mods/Old/papyrus.toml");
         let old = load_lints(&excluded).unwrap();
         assert_eq!(
@@ -1376,25 +1472,95 @@ mod tests {
     }
 
     #[test]
-    fn excludes_add_up_in_a_workspace() {
+    fn workspace_tables_are_used_as_in_cargo() {
+        let dir = std::env::temp_dir().join(format!("papyrus-inherit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("App")).unwrap();
+        std::fs::create_dir_all(dir.join("Empty/App")).unwrap();
+        let w = |p: &str, text: &str| std::fs::write(dir.join(p), text).unwrap();
+        w(
+            "papyrus.toml",
+            "[workspace]\nmembers = [\"App\"]\n[workspace.lints]\nstyle = \"allow\"\n[workspace.format]\nindent-size = 2\n",
+        );
+        let manifest = dir.join("App/papyrus.toml");
+        let messages = |errors: Vec<ManifestError>| {
+            errors.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n")
+        };
+        let errors_of = |text: &str| {
+            std::fs::write(&manifest, text).unwrap();
+            let lints = load_lints(&manifest).err().map(messages);
+            let format = load_format(&manifest).err().map(messages);
+            let whole = load_workspace(&manifest, &vars()).err().map(messages);
+            (lints, format, whole)
+        };
+
+        // Overrides.
+        let (lints, _, whole) = errors_of("[lints]\nworkspace = true\nall = \"warn\"\n");
+        let expected = "cannot override `workspace.lints` in `lints`";
+        assert!(lints.unwrap().contains(expected));
+        assert!(whole.unwrap().contains(expected));
+        let (_, format, whole) = errors_of("[format]\nworkspace = true\nindent-size = 4\n");
+        let expected = "cannot override `workspace.format` in `format`";
+        assert!(format.unwrap().contains(expected));
+        assert!(whole.unwrap().contains(expected));
+        let (lints, _, _) = errors_of("[lints]\nworkspace = true\nexclude = [\"a\"]\n");
+        assert!(lints.is_some());
+
+        // `false`, even alone.
+        let (lints, _, _) = errors_of("[lints]\nworkspace = false\n");
+        assert_eq!(lints.as_deref(), Some("`workspace` cannot be false"));
+        let (_, format, _) = errors_of("[format]\nworkspace = false\n");
+        assert_eq!(format.as_deref(), Some("`workspace` cannot be false"));
+        let (lints, _, _) = errors_of("[lints]\nworkspace = \"yes\"\n");
+        assert!(lints.is_some());
+
+        // Nothing to inherit: no such table, no workspace.
+        w("Empty/papyrus.toml", "[workspace]\nmembers = [\"App\"]\n");
+        let in_empty = dir.join("Empty/App/papyrus.toml");
+        std::fs::write(&in_empty, "[lints]\nworkspace = true\n[format]\nworkspace = true\n")
+            .unwrap();
+        assert!(
+            messages(load_lints(&in_empty).unwrap_err())
+                .contains("`workspace.lints` was not defined")
+        );
+        assert!(
+            messages(load_format(&in_empty).unwrap_err())
+                .contains("`workspace.format` was not defined")
+        );
+        let whole = messages(load_workspace(&in_empty, &vars()).unwrap_err());
+        assert!(whole.contains("`workspace.lints` was not defined"), "{whole}");
+        assert!(whole.contains("`workspace.format` was not defined"), "{whole}");
+
+        let alone_dir = dir.join("Alone");
+        std::fs::create_dir_all(&alone_dir).unwrap();
+        let alone = alone_dir.join("papyrus.toml");
+        std::fs::write(&alone, "[lints]\nworkspace = true\n[format]\nworkspace = true\n").unwrap();
+        let expected = "failed to find a workspace root";
+        assert!(messages(load_lints(&alone).unwrap_err()).contains(expected));
+        assert!(messages(load_format(&alone).unwrap_err()).contains(expected));
+        assert!(messages(load_workspace(&alone, &vars()).unwrap_err()).contains(expected));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn excludes_of_the_table_in_use() {
         let dir = std::env::temp_dir().join(format!("papyrus-exclude-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("App/src")).unwrap();
         let w = |p: &str, text: &str| std::fs::write(dir.join(p), text).unwrap();
         w(
             "papyrus.toml",
-            "[workspace]\nmembers = [\"App\"]\n[workspace.lints]\nexclude = [\"App/shared/**\"]\n[workspace.format]\nexclude = [\"App/shared/**\"]\n",
+            "[workspace]\nmembers = [\"App\"]\n[workspace.lints]\nexclude = [\"App/shared/**\"]\nall = \"warn\"\n[workspace.format]\nexclude = [\"App/shared/**\"]\n",
         );
         w(
             "App/papyrus.toml",
-            "[package]\nname = \"App\"\n[lints]\nexclude = [\"src/gen\"]\nall = \"warn\"\n[format]\nexclude = [\"src/gen\"]\n",
+            "[package]\nname = \"App\"\n[lints]\nworkspace = true\n[format]\nworkspace = true\n",
         );
 
         let project = load_workspace(&dir.join("App/papyrus.toml"), &vars()).unwrap();
         let on_its_own = load_lints(&dir.join("App/papyrus.toml")).unwrap();
         for config in [&on_its_own, &project.members[0].lints] {
             assert!(!config.is_excluded(&dir.join("App/src/T.psc")));
-            assert!(config.is_excluded(&dir.join("App/src/gen/T.psc")));
             assert!(config.is_excluded(&dir.join("App/shared/T.psc")));
             // The other settings of the table still count.
             let level = config.level(papyrus_lint::find("unchecked-cast").unwrap());
@@ -1402,10 +1568,20 @@ mod tests {
         }
 
         assert!(!format_excludes(&dir.join("App/src/T.psc")));
-        assert!(format_excludes(&dir.join("App/src/gen/T.psc")));
         assert!(format_excludes(&dir.join("App/shared/T.psc")));
         let member = &project.members[0];
         assert!(member.format.exclude.matches(&dir.join("App/shared/T.psc")));
+
+        // Its own table, without the ones of the workspace.
+        w(
+            "App/papyrus.toml",
+            "[lints]\nexclude = [\"src/gen\"]\n[format]\nexclude = [\"src/gen\"]\n",
+        );
+        let alone = load_lints(&dir.join("App/papyrus.toml")).unwrap();
+        assert!(alone.is_excluded(&dir.join("App/src/gen/T.psc")));
+        assert!(!alone.is_excluded(&dir.join("App/shared/T.psc")));
+        assert!(format_excludes(&dir.join("App/src/gen/T.psc")));
+        assert!(!format_excludes(&dir.join("App/shared/T.psc")));
 
         // Mistakes are reported.
         w("App/papyrus.toml", "[lints]\nexclude = \"src\"\n");

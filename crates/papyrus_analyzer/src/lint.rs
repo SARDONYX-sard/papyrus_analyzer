@@ -21,9 +21,8 @@ usage: papyrus_analyzer lint [OPTIONS] [PATH]...
 
 options:
   --fix           apply the automatic fixes and rewrite the files
-    --allow-manual-fixes  also apply the fixes that are guesses (`unknown-state`,
-                          `unknown-event`, `unknown-mod-callback`,
-                          `unknown-mod-event`), when there is one candidate only
+    --allow-manual-fixes  also apply the fixes that change what the code does,
+                          when there is one candidate only
     --check-vcs           like `cargo fix`, refuse scripts with uncommitted
                           changes, and to run without a git repository:
       --allow-dirty       fix scripts with changes not staged, or untracked

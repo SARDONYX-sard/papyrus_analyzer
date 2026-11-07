@@ -83,10 +83,14 @@ Int Function UnreachableCode()
 EndFunction
 
 ; repeating-update (suspicious): updates come whether the last one is done or not.
+; Quick fix: RegisterForSingleUpdate here, and again at the end of OnUpdate.
 Function RepeatingUpdate()
-    RegisterForUpdate(1.0)       ; warning
-    RegisterForSingleUpdate(1.0) ; fine: register again at the end of OnUpdate
+    RegisterForUpdate(1.0) ; warning
 EndFunction
+
+Event OnUpdate()
+    Debug.Trace("update")
+EndEvent
 
 ; bool-literal-comparison (complexity): a comparison with True or False.
 ; Quick fix: `If abFlag`. Allowed by `complexity = "warn"` in this papyrus.toml.

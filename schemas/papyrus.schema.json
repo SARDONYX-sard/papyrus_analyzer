@@ -72,7 +72,7 @@
         "output": {
           "type": "string",
           "default": "output",
-          "description": "Directory of the compiled .pex files; the directory structure of sources is kept."
+          "description": "Directory of the compiled .pex files; the directory structure of sources is kept. Decompiled scripts go to its decompile folder."
         },
         "imports": {
           "type": "array",
@@ -84,7 +84,7 @@
         },
         "flags": {
           "type": "string",
-          "description": "The flags file, e.g. TESV_Papyrus_Flags.flg."
+          "description": "The flags file, e.g. TESV_Papyrus_Flags.flg. Required by PapyrusCompiler.exe; without it, the built-in compiler uses the flags of Skyrim."
         },
         "optimize": {
           "type": "boolean",
@@ -134,9 +134,14 @@
         }
       },
       "properties": {
+        "workspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use [workspace.lints] of the workspace, like in Cargo.toml. Without it, that table does not apply. Must be true, and alone in this table."
+        },
         "exclude": {
           "$ref": "#/definitions/exclude",
-          "description": "Scripts without lint problems nor fixes, e.g. [\"src/vendor\", \"**/*_gen.psc\"]. Relative to this file; `*` any text of a name, `?` one character, `**` any directories. Without `/` at any depth; a directory leaves out what is below it. Case is ignored. A workspace and its members add up."
+          "description": "Scripts without lint problems nor fixes, e.g. [\"src/vendor\", \"**/*_gen.psc\"]. Relative to this file; `*` any text of a name, `?` one character, `**` any directories. Without `/` at any depth; a directory leaves out what is below it. Case is ignored."
         },
         "all": {
           "$ref": "#/properties/lints/definitions/level",
@@ -237,9 +242,14 @@
       "additionalProperties": false,
       "description": "Formatter settings shared by the team. Unset values come from .editorconfig, then from the editor.",
       "properties": {
+        "workspace": {
+          "type": "boolean",
+          "default": false,
+          "description": "Use [workspace.format] of the workspace, like in Cargo.toml. Without it, that table does not apply. Must be true, and alone in this table."
+        },
         "exclude": {
           "$ref": "#/definitions/exclude",
-          "description": "Scripts left as they are, e.g. [\"src/vendor\", \"**/*_gen.psc\"]. Relative to this file; `*` any text of a name, `?` one character, `**` any directories. Without `/` at any depth; a directory leaves out what is below it. Case is ignored. A workspace and its members add up."
+          "description": "Scripts left as they are, e.g. [\"src/vendor\", \"**/*_gen.psc\"]. Relative to this file; `*` any text of a name, `?` one character, `**` any directories. Without `/` at any depth; a directory leaves out what is below it. Case is ignored."
         },
         "indent-style": {
           "description": "Indent with spaces or tabs.",
@@ -353,7 +363,7 @@
     "workspace": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Several projects in one folder, like Cargo workspaces. Members inherit these settings; their own values win (imports are appended).",
+      "description": "Several projects in one folder, like Cargo workspaces. Members inherit var, compiler and build; their own values win (imports are appended). lints and format apply to the members asking for them with workspace = true.",
       "properties": {
         "members": {
           "type": "array",

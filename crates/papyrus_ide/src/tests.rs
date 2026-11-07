@@ -3,6 +3,8 @@ use std::{
     sync::Arc,
 };
 
+use papyrus_intern::Name;
+
 use crate::{features::completion::Completions, *};
 
 /// Builds a workspace from `(file name, text)` pairs, all opened in the editor.

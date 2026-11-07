@@ -11,3 +11,9 @@ output  = "${workspaceFolder}/target/papyrus"
 
 [test]
 sources = ["tests"]
+
+[lints]
+workspace = true
+
+[format]
+workspace = true

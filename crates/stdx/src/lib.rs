@@ -71,11 +71,6 @@ impl PathExcludes {
             path.strip_prefix(base.as_slice()).is_some_and(|rest| pattern_matches(pattern, rest))
         })
     }
-
-    /// Adds the patterns of `other`.
-    pub fn extend(&mut self, other: PathExcludes) {
-        self.patterns.extend(other.patterns);
-    }
 }
 
 /// The lowercase components of `path`, made absolute.
