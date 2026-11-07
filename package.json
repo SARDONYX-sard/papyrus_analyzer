@@ -2,7 +2,7 @@
   "name": "papyrus-analyzer",
   "displayName": "Papyrus Analyzer",
   "description": "Language support for Skyrim's Papyrus scripting language: diagnostics, completion, hover, go to definition, references and more.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "SARDONYX",
   "license": "MIT OR Apache-2.0",
   "icon": "resources/icon.png",
