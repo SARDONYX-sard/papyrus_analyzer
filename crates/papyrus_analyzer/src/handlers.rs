@@ -490,6 +490,21 @@ impl Server {
                     });
                 }
             }
+            // `▶ Run Doctest` above the examples of documentation comments, like
+            // rust-analyzer: `papyrus_analyzer test --doc` on that one.
+            let path = &self.ws.file(file).path;
+            for doc in crate::doctest::find_in(path, &text) {
+                let line = (doc.line - 1) as u32;
+                lenses.push(CodeLens {
+                    range: lsp_types::Range::new(Position::new(line, 0), Position::new(line, 0)),
+                    command: Some(Command {
+                        title: "▶\u{fe0e} Run Doctest".to_owned(),
+                        command: "papyrus.runDocTest".to_owned(),
+                        arguments: Some(vec![uri.clone(), serde_json::Value::String(doc.name)]),
+                    }),
+                    data: None,
+                });
+            }
         }
         Some(lenses)
     }

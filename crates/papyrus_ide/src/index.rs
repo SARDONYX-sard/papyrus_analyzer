@@ -548,12 +548,13 @@ fn expr_text(node: SyntaxNode<'_>) -> Box<str> {
     }
 }
 
-/// Finds the documentation comments of a declaration:
+/// Finds the documentation comments of a declaration, in this order:
 ///
-/// - the comment lines directly above it (`;` or `;/ /;` comments, without a
-///   blank line in between), and
 /// - a `{ ... }` comment on the line right after its header line, which is the
-///   official Papyrus documentation syntax.
+///   official Papyrus documentation syntax, shown in the Creation Kit: the
+///   summary;
+/// - the comment lines directly above it (`;` or `;/ /;` comments, without a
+///   blank line in between): the rest, like examples.
 pub fn doc_ranges(node: SyntaxNode<'_>) -> Vec<TextRange> {
     let mut out = Vec::new();
     let Some(first) = node.first_token() else { return out };
@@ -584,9 +585,8 @@ pub fn doc_ranges(node: SyntaxNode<'_>) -> Vec<TextRange> {
         cur = tok.prev_token();
     }
     leading.reverse();
-    out.extend(leading);
 
-    // `{ doc }` after the header line, or at the end of it.
+    // `{ doc }` after the header line, or at the end of it: the summary, first.
     let mut cur = Some(first);
     while let Some(tok) = cur {
         if tok.kind() == SyntaxKind::NEWLINE {
@@ -594,6 +594,7 @@ pub fn doc_ranges(node: SyntaxNode<'_>) -> Vec<TextRange> {
         }
         if tok.kind() == SyntaxKind::DOC_COMMENT {
             out.push(tok.text_range());
+            out.extend(leading);
             return out;
         }
         cur = tok.next_token();
@@ -610,6 +611,7 @@ pub fn doc_ranges(node: SyntaxNode<'_>) -> Vec<TextRange> {
         }
         cur = tok.next_token();
     }
+    out.extend(leading);
     out
 }
 
@@ -627,19 +629,43 @@ fn starts_line(tok: SyntaxToken<'_>) -> bool {
 
 /// Turns comment tokens into plain documentation text.
 pub fn render_docs(text: &str, ranges: &[TextRange]) -> String {
-    let mut out = String::new();
+    hide_test_lines(&doc_comments_markdown(text, ranges))
+}
+
+/// The Markdown of documentation comments, as written: with the hidden lines of
+/// their examples, for doc tests.
+pub fn doc_comments_markdown(text: &str, ranges: &[TextRange]) -> String {
+    let lines = doc_comment_lines(text, ranges);
+    let lines: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+    keep_line_breaks(&lines.join("\n"))
+}
+
+/// The lines of the Markdown of documentation comments, each with the line of
+/// the script it comes from (from 0).
+///
+/// `; text` lines are like `/// text` in Rust: one space after `;` is removed,
+/// the rest of the indentation is kept, and `;` alone is a blank line.
+pub fn doc_comment_lines(text: &str, ranges: &[TextRange]) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
     for &range in ranges {
-        let Some(raw) = text.get(usize::from(range.start())..usize::from(range.end())) else {
-            continue;
-        };
-        let body = if let Some(inner) = raw.strip_prefix(";/") {
+        let start = usize::from(range.start());
+        let Some(raw) = text.get(start..usize::from(range.end())) else { continue };
+        let first_line = text[..start].matches('\n').count();
+        let block = if let Some(inner) = raw.strip_prefix(";/") {
             inner.strip_suffix("/;").unwrap_or(inner)
         } else if let Some(inner) = raw.strip_prefix('{') {
             inner.strip_suffix('}').unwrap_or(inner)
         } else {
-            raw.trim_start_matches(';')
+            let line = raw.trim_start_matches(';');
+            let line = line.strip_prefix(' ').unwrap_or(line).trim_end();
+            out.push((first_line, line.to_owned()));
+            continue;
         };
-        let lines: Vec<&str> = body.lines().collect();
+        // A paragraph of its own: `{Summary.}` then `; Text.` lines.
+        if out.last().is_some_and(|(_, l)| !l.is_empty()) {
+            out.push((first_line, String::new()));
+        }
+        let lines: Vec<&str> = block.lines().collect();
         // Remove the common indentation of multi-line comments.
         let indent = lines
             .iter()
@@ -657,11 +683,50 @@ pub fn render_docs(text: &str, ranges: &[TextRange]) -> String {
             if i == 0 && line.is_empty() {
                 continue;
             }
-            out.push_str(line);
-            out.push('\n');
+            out.push((first_line + i, line.to_owned()));
         }
+        out.push((first_line, String::new()));
     }
-    keep_line_breaks(out.trim())
+    // Like `trim`: no blank lines around.
+    let first = out.iter().position(|(_, l)| !l.is_empty()).unwrap_or(out.len());
+    let last = out.iter().rposition(|(_, l)| !l.is_empty()).map_or(first, |i| i + 1);
+    out.truncate(last);
+    out.drain(..first);
+    out
+}
+
+/// Documentation as readers see it, like rustdoc: the lines of `papyrus`
+/// examples starting with `# ` are for doc tests only (declarations the example
+/// needs), and the attributes of the examples (`papyrus,no_run`) are dropped.
+pub fn hide_test_lines(markdown: &str) -> String {
+    let mut out = Vec::new();
+    let (mut in_papyrus, mut in_other) = (false, false);
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            if in_papyrus || in_other {
+                (in_papyrus, in_other) = (false, false);
+                out.push(line.to_owned());
+            } else if info
+                .split(',')
+                .next()
+                .is_some_and(|l| l.trim().eq_ignore_ascii_case("papyrus"))
+            {
+                in_papyrus = true;
+                let indent = &line[..line.len() - trimmed.len()];
+                out.push(format!("{indent}```papyrus"));
+            } else {
+                in_other = true;
+                out.push(line.to_owned());
+            }
+            continue;
+        }
+        if in_papyrus && (trimmed == "#" || trimmed.starts_with("# ")) {
+            continue;
+        }
+        out.push(line.to_owned());
+    }
+    out.join("\n")
 }
 
 /// Markdown joins the lines of a paragraph, which most comments of scripts do
@@ -725,9 +790,16 @@ mod tests {
         let (idx, text) = index(src);
         assert_eq!(
             render_docs(&text, &idx.members[0].docs),
-            "Adds numbers.  \nReally.  \nOfficial docs"
+            "Official docs\n\nAdds numbers.  \nReally."
         );
         assert_eq!(render_docs(&text, &idx.members[1].docs), "");
+        // Like `///` in Rust: one space after `;` is removed, not the rest.
+        let src = "ScriptName Foo\n; Text.\n;\n; ```papyrus\n; If a\n;     F()\n; EndIf\n; ```\nFunction F()\nEndFunction\n";
+        let (idx, text) = index(src);
+        assert_eq!(
+            render_docs(&text, &idx.members[0].docs),
+            "Text.\n\n```papyrus\nIf a\n    F()\nEndIf\n```"
+        );
     }
 
     #[test]

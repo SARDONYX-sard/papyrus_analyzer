@@ -4,6 +4,7 @@ by `EndIf`.
 # Examples
 
 ```papyrus
+# Int health = 5
 If health < 10
     Debug.Notification("Low health")
 ElseIf health < 50

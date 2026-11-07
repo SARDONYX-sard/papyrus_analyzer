@@ -40,6 +40,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand("papyrus.runTest", async (uri: string, target: string) => {
       await runServerTask(["run", target], projectDir(vscode.Uri.parse(uri).fsPath), `run ${target}`);
     }),
+    // The `▶ Run Doctest` code lens: `papyrus_analyzer test --doc "Script.Function (line 5)"`.
+    vscode.commands.registerCommand("papyrus.runDocTest", async (uri: string, name: string) => {
+      await runServerTask(["test", "--doc", name], projectDir(vscode.Uri.parse(uri).fsPath), `doc test ${name}`);
+    }),
     // The `⚙ Debug` code lens: the test in the debugger of the Papyrus VM.
     vscode.commands.registerCommand("papyrus.debugTest", async (uri: string, target: string) => {
       const folder = vscode.workspace.getWorkspaceFolder(vscode.Uri.parse(uri));

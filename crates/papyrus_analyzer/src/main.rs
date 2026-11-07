@@ -10,6 +10,7 @@ mod conv;
 mod debug;
 mod decompile;
 mod disasm;
+mod doctest;
 mod ext;
 mod fmt;
 mod handlers;

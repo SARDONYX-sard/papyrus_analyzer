@@ -221,7 +221,7 @@ pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
             signature: b.signature(elem),
             path: None,
             container: Some("built-in".to_owned()),
-            docs: b.docs().to_owned(),
+            docs: b.docs(),
         },
         Def::Flag(table, i) => {
             let flags = sema.ws.flag_table(table);

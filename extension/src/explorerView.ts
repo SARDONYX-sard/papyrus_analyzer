@@ -132,6 +132,7 @@ class ExplorerProvider
 
   refresh(): void {
     this.loaded = false;
+    this.docs.clear();
     this.changed.fire(undefined);
     this.decorationsChanged.fire(undefined);
   }
@@ -232,6 +233,50 @@ class ExplorerProvider
       file.toLowerCase().endsWith(".psc") &&
       state.testSources.some((dir) => isWithin(file, dir))
     );
+  }
+
+  /** Whether the documentation of the `.psc` file has examples to test, by path key. */
+  private readonly docs = new Map<string, boolean>();
+
+  /** Whether `file` has doc tests: a ```` ```papyrus ```` example not `ignore`d. */
+  hasDocTests(file: string): boolean {
+    if (this.mode !== "compile" || !file.toLowerCase().endsWith(".psc")) {
+      return false;
+    }
+    const k = key(file);
+    let has = this.docs.get(k);
+    if (has === undefined) {
+      try {
+        has = /```papyrus(?![^\n]*ignore)/i.test(fs.readFileSync(file, "utf8"));
+      } catch {
+        has = false;
+      }
+      this.docs.set(k, has);
+    }
+    return has;
+  }
+
+  /** `file` changed: its row gets or loses the doc test button. */
+  docsChanged(uri: vscode.Uri): void {
+    const k = key(uri.fsPath);
+    const had = this.docs.get(k);
+    this.docs.delete(k);
+    const node = this.nodes.get(k);
+    if (had !== undefined && node && this.hasDocTests(uri.fsPath) !== had) {
+      this.changed.fire(node);
+    }
+  }
+
+  /** The `.psc` files of `node` with doc tests. */
+  docTests(node: Node): vscode.Uri[] {
+    switch (node.kind) {
+      case "file":
+        return this.hasDocTests(node.uri.fsPath) ? [node.uri] : [];
+      case "folder":
+        return node.children.flatMap((c) => this.docTests(c));
+      default:
+        return [];
+    }
   }
 
   /** The test scripts of `node`. */
@@ -489,11 +534,13 @@ class ExplorerProvider
       rowUri(node.uri),
       vscode.TreeItemCollapsibleState.None,
     );
-    item.contextValue = this.isTarget(node.uri.fsPath)
-      ? "papyrusFile"
-      : this.isTest(node.uri.fsPath)
-        ? "papyrusFileTest"
-        : "papyrusFileOther";
+    // `Doc`: examples in the documentation, a button runs them.
+    item.contextValue =
+      (this.isTarget(node.uri.fsPath)
+        ? "papyrusFile"
+        : this.isTest(node.uri.fsPath)
+          ? "papyrusFileTest"
+          : "papyrusFileOther") + (this.hasDocTests(node.uri.fsPath) ? "Doc" : "");
     const status = this.statuses.get(key(node.uri.fsPath));
     const error = this.errors.get(key(node.uri.fsPath));
     if (status === "running") {
@@ -806,7 +853,10 @@ export function registerExplorerView(context: vscode.ExtensionContext): void {
       provider.markFresh(uri);
       refreshSoon();
     }),
-    watcher.onDidChange((uri) => provider.markFresh(uri)),
+    watcher.onDidChange((uri) => {
+      provider.markFresh(uri);
+      provider.docsChanged(uri);
+    }),
     watcher.onDidDelete(refreshSoon),
     compileEvents.event((e) => {
       provider.setStatus(e.script, e.status);
@@ -864,6 +914,15 @@ export function registerExplorerView(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("papyrus.explorer.runTests", (node: Node) =>
       runTests(provider.tests(node).map((u) => u.fsPath)),
     ),
+    // Scripts with examples in their documentation: `papyrus_analyzer test --doc` on them.
+    vscode.commands.registerCommand("papyrus.explorer.runDocTests", async (node: Node) => {
+      const files = provider.docTests(node).map((u) => u.fsPath);
+      if (files.length === 0) {
+        void vscode.window.showInformationMessage("Papyrus: no doc tests here.");
+        return;
+      }
+      await runTests(files, true);
+    }),
     vscode.commands.registerCommand("papyrus.explorer.open", (node: Node) => {
       if (node.kind === "file") {
         open(node.uri);

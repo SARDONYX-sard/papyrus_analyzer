@@ -30,14 +30,23 @@ use crate::log;
 
 /// Adds `targets` and the scripts of `imports` they need to `ws`.
 pub fn load(ws: &mut Workspace, targets: &[PathBuf], imports: &[PathBuf]) {
+    let texts: Vec<(PathBuf, String)> = targets
+        .iter()
+        .filter_map(|path| Some((path.clone(), papyrus_ide::read_file(path)?)))
+        .collect();
+    load_texts(ws, &texts, imports);
+}
+
+/// Like [`load`], with the text of the targets, which need not be on disk: the
+/// examples of doc tests.
+pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[PathBuf]) {
     let start = std::time::Instant::now();
     // Script name (lowercase) to file, the first import directory winning.
     let mut files: FxHashMap<String, (PathBuf, Origin)> = FxHashMap::default();
     for (i, dir) in imports.iter().enumerate() {
         let origin = Origin::Import(i.min(u16::MAX as usize) as u16);
-        let mut found = Vec::new();
-        list_scripts(&std::path::absolute(dir).unwrap_or_else(|_| dir.clone()), &mut found);
-        for path in found {
+        let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.clone());
+        for path in scripts_of(&dir) {
             let Some(stem) = path.file_stem() else { continue };
             files.entry(stem.to_string_lossy().to_ascii_lowercase()).or_insert((path, origin));
         }
@@ -46,13 +55,12 @@ pub fn load(ws: &mut Workspace, targets: &[PathBuf], imports: &[PathBuf]) {
 
     let mut loaded: FxHashSet<String> = FxHashSet::default();
     let mut queue: Vec<String> = Vec::new();
-    for path in targets {
-        let Some(text) = papyrus_ide::read_file(path) else { continue };
-        let index = papyrus_ide::index_text(&text);
+    for (path, text) in targets {
+        let index = papyrus_ide::index_text(text);
         if let Some(name) = index.name {
             loaded.insert(name.as_str().to_ascii_lowercase());
         }
-        mentioned_names(&text, &mut queue);
+        mentioned_names(text, &mut queue);
         declared_names(&index, &mut queue);
         ws.set_disk_index(path.clone(), index, Origin::Workspace);
     }
@@ -71,10 +79,10 @@ pub fn load(ws: &mut Workspace, targets: &[PathBuf], imports: &[PathBuf]) {
         parsed += 1;
     }
 
-    // The rest by name only.
+    // The rest by name only; not the ones a previous load parsed.
     let mut stubs = 0;
     for (key, (path, origin)) in &files {
-        if loaded.contains(key) {
+        if loaded.contains(key) || ws.file_id(path).is_some() {
             continue;
         }
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -117,6 +125,24 @@ fn declared_names(index: &ScriptIndex, out: &mut Vec<String>) {
         }
     }
     out.extend(index.extends.iter().chain(index.imports.iter()).map(|n| n.as_str().to_owned()));
+}
+
+/// The `.psc` files below the import directory `dir`, listed once per process:
+/// the game scripts do not change while a command runs, and a run of tests loads
+/// scripts many times.
+fn scripts_of(dir: &Path) -> Vec<PathBuf> {
+    use std::sync::{Mutex, OnceLock};
+    static LISTED: OnceLock<Mutex<FxHashMap<PathBuf, Vec<PathBuf>>>> = OnceLock::new();
+    let listed = LISTED.get_or_init(Default::default);
+    if let Some(found) = listed.lock().ok().and_then(|l| l.get(dir).cloned()) {
+        return found;
+    }
+    let mut found = Vec::new();
+    list_scripts(dir, &mut found);
+    if let Ok(mut l) = listed.lock() {
+        l.insert(dir.to_path_buf(), found.clone());
+    }
+    found
 }
 
 /// The `.psc` files below `dir`.

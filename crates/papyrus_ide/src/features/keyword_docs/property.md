@@ -5,6 +5,7 @@ with `EndProperty`.
 # Examples
 
 ```papyrus
+# Float _speed
 Actor Property PlayerRef Auto
 Int Property MaxCount = 10 AutoReadOnly
 

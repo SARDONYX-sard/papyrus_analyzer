@@ -36,16 +36,28 @@ The scripts of the [test] sources of papyrus.toml see the built-in script
 `PapyrusAnalyzer` (`AssertIntEq`, `NewObject`, `AssertCalled`...; `Import
 PapyrusAnalyzer` calls them unqualified). A project script of that name wins.
 
+Then the doc tests, like `cargo test`: the ```papyrus examples of the
+documentation comments compile and run (`papyrus,no_run`: compile only,
+`papyrus,ignore`: skipped; lines starting with `# ` are hidden from hovers).
+
   PATH     only the tests of the scripts of this file or directory
   FILTER   only the tests whose `Script.Function` contains it (any case)
 
 options:
+  --doc        only the doc tests
   -h, --help   print this help";
 
 /// Compiles the scripts of the workspace when the machine loads them.
 pub(crate) struct Compiled {
     ws: Workspace,
     imports: Vec<PathBuf>,
+}
+
+impl Compiled {
+    /// Compiles the scripts of `ws`, whose scripts use those of `imports`.
+    pub(crate) fn new(ws: Workspace, imports: Vec<PathBuf>) -> Compiled {
+        Compiled { ws, imports }
+    }
 }
 
 impl ScriptLoader for Compiled {
@@ -184,35 +196,81 @@ pub(crate) fn test(args: &[String]) -> i32 {
         println!("{TEST_USAGE}");
         return 0;
     }
+    let cwd = std::env::current_dir().unwrap_or_default();
     let mut scripts: Vec<PathBuf> = Vec::new();
-    collect(&std::env::current_dir().unwrap_or_default(), &mut scripts);
-    let started = std::time::Instant::now();
-    let marked = marked_functions(&scripts);
-    let all = marked.iter().filter(|m| m.mocks.is_none());
-    let tests: Vec<&Marked> = all.clone().filter(|m| selected(m, args)).collect();
-    let filtered_out = all.count() - tests.len();
+    collect(&cwd, &mut scripts);
+    let doc_only = args.iter().any(|a| a == "--doc");
+    let mut failed = false;
 
-    // Like `cargo test`: a line per test, then the output of the failures,
-    // then the summary.
-    let plural = if tests.len() == 1 { "" } else { "s" };
-    println!("\nrunning {} test{plural}", tests.len());
-    let mut vm = Vm::new(loader(&scripts));
-    // Name, output (Debug.Trace...), problem.
-    let mut results: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
-    for Marked { script, function, .. } in tests.iter().copied() {
-        vm.begin_test();
-        let result = start(&mut vm, &marked, script).and_then(|obj| vm.call(obj, function, &[]));
-        let name = format!("{script}.{function}");
-        let problem = match &result {
-            // One line per error, like a panic message.
-            Ok(_) if !vm.errors.is_empty() => Some(vm.errors.join("\n")),
-            _ => problem(&vm, &result),
-        };
-        let verdict = if problem.is_some() { paint(RED, "FAILED") } else { paint(GREEN, "ok") };
-        println!("test {name} ... {verdict}");
-        results.push((name, std::mem::take(&mut vm.output), problem));
+    if !doc_only {
+        let started = std::time::Instant::now();
+        let marked = marked_functions(&scripts);
+        let all = marked.iter().filter(|m| m.mocks.is_none());
+        let tests: Vec<&Marked> = all
+            .clone()
+            .filter(|m| selected(&format!("{}.{}", m.script, m.function), &m.path, args))
+            .collect();
+        let filtered_out = all.count() - tests.len();
+
+        // Like `cargo test`: a line per test, then the output of the failures,
+        // then the summary.
+        let plural = if tests.len() == 1 { "" } else { "s" };
+        println!("\nrunning {} test{plural}", tests.len());
+        let mut vm = Vm::new(loader(&scripts));
+        let mut results: Vec<TestResult> = Vec::new();
+        for Marked { script, function, .. } in tests.iter().copied() {
+            vm.begin_test();
+            let result =
+                start(&mut vm, &marked, script).and_then(|obj| vm.call(obj, function, &[]));
+            let name = format!("{script}.{function}");
+            let problem = match &result {
+                // One line per error, like a panic message.
+                Ok(_) if !vm.errors.is_empty() => Some(vm.errors.join("\n")),
+                _ => problem(&vm, &result),
+            };
+            print_verdict(&name, problem.is_some());
+            results.push((name, std::mem::take(&mut vm.output), problem));
+        }
+        failed |= report(&results, filtered_out, started);
     }
 
+    // Like `cargo test`, the doc tests after.
+    let docs = crate::doctest::find(&scripts);
+    if doc_only || !docs.is_empty() {
+        let started = std::time::Instant::now();
+        let all = docs.len();
+        let docs: Vec<_> = docs.into_iter().filter(|d| selected(&d.name, &d.path, args)).collect();
+        println!("   Doc-tests\n");
+        let plural = if docs.len() == 1 { "" } else { "s" };
+        println!("running {} test{plural}", docs.len());
+        let Compiled { ws, imports } = loader(&scripts);
+        // Where the scripts of the examples are, in memory only: below the test
+        // directory, they see `PapyrusAnalyzer`.
+        let dir = cwd.join(".papyrus-doc-tests");
+        let mut results: Vec<TestResult> = Vec::new();
+        for (i, doc) in docs.iter().enumerate() {
+            let name = format!("DocTest{i}");
+            let base = doc.base.as_deref();
+            let problem = crate::doctest::run(&ws, &imports, &dir, &doc.example, &name, base).err();
+            print_verdict(&doc.name, problem.is_some());
+            results.push((doc.name.clone(), Vec::new(), problem));
+        }
+        failed |= report(&results, all - docs.len(), started);
+    }
+    i32::from(failed)
+}
+
+/// A test: its name, its output (`Debug.Trace`...) and why it failed.
+type TestResult = (String, Vec<String>, Option<String>);
+
+fn print_verdict(name: &str, failed: bool) {
+    let verdict = if failed { paint(RED, "FAILED") } else { paint(GREEN, "ok") };
+    println!("test {name} ... {verdict}");
+}
+
+/// Like `cargo test`: the output of the failures, then the summary. Whether a
+/// test failed.
+fn report(results: &[TestResult], filtered_out: usize, started: std::time::Instant) -> bool {
     let failures: Vec<_> = results
         .iter()
         .filter_map(|(name, output, problem)| Some((name, output, problem.as_ref()?)))
@@ -239,7 +297,7 @@ pub(crate) fn test(args: &[String]) -> i32 {
         results.len() - failed,
         started.elapsed().as_secs_f64()
     );
-    i32::from(failed > 0)
+    failed > 0
 }
 
 const GREEN: &str = "32";
@@ -253,10 +311,11 @@ fn paint(sgr: &str, text: &str) -> String {
     if color { format!("\x1b[{sgr}m{text}\x1b[0m") } else { text.to_owned() }
 }
 
-/// Whether the arguments of `test` select `m`: every test without any; else
-/// the tests below a path argument, or whose name contains another one.
-fn selected(m: &Marked, args: &[String]) -> bool {
-    let name = format!("{}.{}", m.script, m.function).to_ascii_lowercase();
+/// Whether the arguments of `test` select the test `name` of the file `path`:
+/// every test without any; else the tests below a path argument, or whose name
+/// contains another one.
+fn selected(name: &str, path: &std::path::Path, args: &[String]) -> bool {
+    let name = name.to_ascii_lowercase();
     let mut filters = args.iter().filter(|a| !a.starts_with('-')).peekable();
     if filters.peek().is_none() {
         return true;
@@ -264,7 +323,7 @@ fn selected(m: &Marked, args: &[String]) -> bool {
     let below = |dir: &std::path::Path| {
         let canonical =
             |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_owned());
-        canonical(&m.path).starts_with(canonical(dir))
+        canonical(path).starts_with(canonical(dir))
     };
     filters.any(|f| {
         let path = std::path::Path::new(f);

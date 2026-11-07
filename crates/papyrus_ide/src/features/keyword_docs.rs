@@ -21,7 +21,7 @@ impl KeywordDoc {
     /// Renders the documentation as hover Markdown.
     pub(crate) fn markdown(&self) -> String {
         // Checkouts with CRLF line breaks give CRLF bodies.
-        let body = self.body.trim_end().replace("\r\n", "\n");
+        let body = crate::index::hide_test_lines(&self.body.trim_end().replace("\r\n", "\n"));
         format!("```papyrus\n{}\n```\n*keyword*\n\n---\n\n{body}", self.name)
     }
 }
@@ -34,41 +34,6 @@ macro_rules! docs {
 
 /// The documentation of a keyword token, if it is one.
 pub(crate) fn keyword_doc(kind: SyntaxKind) -> Option<&'static KeywordDoc> {
-    const SCRIPT_DOCS: &[KeywordDoc] = docs![
-        "As" => "as.md",
-        "Auto" => "auto.md",
-        "AutoReadOnly" => "autoreadonly.md",
-        "Bool" => "bool.md",
-        "Else" => "else.md",
-        "ElseIf" => "elseif.md",
-        "EndEvent" => "endevent.md",
-        "EndFunction" => "endfunction.md",
-        "EndIf" => "endif.md",
-        "EndProperty" => "endproperty.md",
-        "EndState" => "endstate.md",
-        "EndWhile" => "endwhile.md",
-        "Event" => "event.md",
-        "Extends" => "extends.md",
-        "False" => "false.md",
-        "Float" => "float.md",
-        "Function" => "function.md",
-        "Global" => "global.md",
-        "If" => "if.md",
-        "Import" => "import.md",
-        "Int" => "int.md",
-        "Native" => "native.md",
-        "New" => "new.md",
-        "None" => "none.md",
-        "Parent" => "parent.md",
-        "Property" => "property.md",
-        "Return" => "return.md",
-        "ScriptName" => "scriptname.md",
-        "Self" => "self.md",
-        "State" => "state.md",
-        "String" => "string.md",
-        "True" => "true.md",
-        "While" => "while.md",
-    ];
     if !kind.is_keyword() {
         return None;
     }
@@ -77,6 +42,47 @@ pub(crate) fn keyword_doc(kind: SyntaxKind) -> Option<&'static KeywordDoc> {
     let name = name.strip_suffix("_KW")?;
     SCRIPT_DOCS.iter().find(|d| d.name.eq_ignore_ascii_case(name))
 }
+
+/// The documentation of the keywords of scripts.
+pub(crate) fn script_keyword_docs() -> &'static [KeywordDoc] {
+    SCRIPT_DOCS
+}
+
+const SCRIPT_DOCS: &[KeywordDoc] = docs![
+    "As" => "as.md",
+    "Auto" => "auto.md",
+    "AutoReadOnly" => "autoreadonly.md",
+    "Bool" => "bool.md",
+    "Else" => "else.md",
+    "ElseIf" => "elseif.md",
+    "EndEvent" => "endevent.md",
+    "EndFunction" => "endfunction.md",
+    "EndIf" => "endif.md",
+    "EndProperty" => "endproperty.md",
+    "EndState" => "endstate.md",
+    "EndWhile" => "endwhile.md",
+    "Event" => "event.md",
+    "Extends" => "extends.md",
+    "False" => "false.md",
+    "Float" => "float.md",
+    "Function" => "function.md",
+    "Global" => "global.md",
+    "If" => "if.md",
+    "Import" => "import.md",
+    "Int" => "int.md",
+    "Native" => "native.md",
+    "New" => "new.md",
+    "None" => "none.md",
+    "Parent" => "parent.md",
+    "Property" => "property.md",
+    "Return" => "return.md",
+    "ScriptName" => "scriptname.md",
+    "Self" => "self.md",
+    "State" => "state.md",
+    "String" => "string.md",
+    "True" => "true.md",
+    "While" => "while.md",
+];
 
 /// The documentation of a keyword of the flags file (`Flag` and the targets).
 pub(crate) fn flag_file_keyword_doc(word: &str) -> Option<&'static KeywordDoc> {
@@ -144,6 +150,15 @@ mod tests {
         &section[start..start + end]
     }
 
+    /// The code of a doc test: the hidden lines shown.
+    fn unhidden(code: &str) -> String {
+        let lines = code.lines().map(|l| {
+            let t = l.trim_start();
+            if t == "#" { "" } else { t.strip_prefix("# ").unwrap_or(l) }
+        });
+        lines.map(|l| format!("{l}\n")).collect()
+    }
+
     #[test]
     fn every_keyword_is_documented() {
         let missing: Vec<_> = KEYWORDS.into_iter().filter(|k| keyword_doc(*k).is_none()).collect();
@@ -157,7 +172,7 @@ mod tests {
     fn script_examples_parse() {
         for kind in KEYWORDS {
             let doc = keyword_doc(kind).unwrap();
-            let example = example(doc);
+            let example = &unhidden(example(doc));
             let src = if example.starts_with("ScriptName") {
                 example.to_owned()
             } else if example.contains("Function ")

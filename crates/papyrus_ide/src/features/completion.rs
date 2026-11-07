@@ -359,7 +359,7 @@ impl<'s, 'a> Ctx<'s, 'a> {
                         b.is_callable().then(|| call_snippet(b.name(), !b.params(elem).is_empty()));
                     let item = self.push(b.name(), kind, 1);
                     item.detail = Some(b.signature(elem));
-                    item.documentation = Some(b.docs().to_owned());
+                    item.documentation = Some(b.docs());
                     item.snippet = snippet;
                 }
             }

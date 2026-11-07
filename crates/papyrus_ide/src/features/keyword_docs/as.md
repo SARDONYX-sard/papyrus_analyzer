@@ -4,6 +4,7 @@ conversions between `Int`, `Float`, `Bool` and `String`.
 # Examples
 
 ```papyrus
+# ObjectReference akRef = Game.GetPlayer()
 Actor target = akRef as Actor
 If target
     target.Kill()

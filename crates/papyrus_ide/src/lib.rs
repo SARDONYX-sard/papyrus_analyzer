@@ -93,5 +93,26 @@ pub fn index_text(text: &str) -> ScriptIndex {
     ScriptIndex::build(papyrus_parser::parse(text).source_file())
 }
 
+/// The documentation of papyrus_analyzer itself, as written, with the lines of
+/// its doc tests: `(name, Markdown)` of the keywords and the built-in methods.
+pub fn documentation() -> Vec<(String, &'static str)> {
+    use crate::sema::Builtin;
+    let keywords = features::keyword_docs::script_keyword_docs()
+        .iter()
+        .map(|d| (format!("keyword {}", d.name), d.body));
+    let builtins = [
+        Builtin::Length,
+        Builtin::Find,
+        Builtin::RFind,
+        Builtin::GoToState,
+        Builtin::GetState,
+        Builtin::OnBeginState,
+        Builtin::OnEndState,
+    ]
+    .into_iter()
+    .map(|b| (format!("built-in {}", b.name()), b.docs_source()));
+    keywords.chain(builtins).collect()
+}
+
 #[cfg(test)]
 mod tests;

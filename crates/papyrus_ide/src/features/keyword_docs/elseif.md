@@ -3,6 +3,7 @@ Checks another condition when the previous `If` or `ElseIf` conditions were fals
 # Examples
 
 ```papyrus
+# Int count = 1
 If count == 0
     Debug.Trace("none")
 ElseIf count == 1

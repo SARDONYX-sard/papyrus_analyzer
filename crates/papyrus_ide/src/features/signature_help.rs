@@ -80,7 +80,7 @@ pub fn signature_help(ws: &Workspace, file: FileId, offset: TextSize) -> Option<
                         Some(ty) => format!("{ty} {}", b.name()),
                         None => b.name().to_owned(),
                     };
-                    (head, b.params(elem), Some(b.docs().to_owned()), Vec::new())
+                    (head, b.params(elem), Some(b.docs()), Vec::new())
                 }
                 _ => return None,
             };

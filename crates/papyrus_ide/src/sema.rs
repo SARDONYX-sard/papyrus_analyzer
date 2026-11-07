@@ -76,8 +76,14 @@ impl Builtin {
         }
     }
 
-    /// The documentation, with `# Examples`: Markdown files of `builtin_docs/`.
-    pub fn docs(self) -> &'static str {
+    /// The documentation, with `# Examples`, as readers see it.
+    pub fn docs(self) -> String {
+        crate::index::hide_test_lines(self.docs_source())
+    }
+
+    /// The documentation as written, Markdown files of `builtin_docs/`: the
+    /// examples with their lines for doc tests.
+    pub fn docs_source(self) -> &'static str {
         match self {
             Builtin::Length => include_str!("builtin_docs/length.md"),
             Builtin::Find => include_str!("builtin_docs/find.md"),

@@ -63,7 +63,7 @@ flowchart LR
 | `Papyrus: Lint Project`          | `lint` on the sources |
 | `Papyrus: Lint Project: Fix All` | `lint --fix`          |
 
-- Test scripts: ▶ runs their tests.
+- Test scripts: ▶ runs their tests. Scripts with ` ```papyrus ` examples: 📖 runs their doc tests (folders: right click).
 - Starts on: a `papyrus.toml` at the root · opening a script.
 - `"papyrus.explorer.show": "always"`: the view in every workspace.
 
@@ -256,9 +256,29 @@ EndFunction
 papyrus_analyzer test                      # every test
 papyrus_analyzer test tests/MyQuestTests.psc   # the tests of a file | folder
 papyrus_analyzer test kills                # the tests whose Script.Function contains it
+papyrus_analyzer test --doc                # the doc tests only
 ```
 
-VS Code: `▶︎ Run Test` | `⚙︎ Debug` above each test — breakpoints · steps · call stack · variables · watch expressions (no calls).
+Doc tests, like rustdoc: the ` ```papyrus ` examples of documentation comments compile and run.
+
+| Fence                  |                                 |
+| ---------------------- | ------------------------------- |
+| ` ```papyrus `         | compiled and run                |
+| ` ```papyrus,no_run `  | compiled only                   |
+| ` ```papyrus,ignore `  | skipped                         |
+| `# Int x = 1` (a line) | in the test, hidden from hovers |
+
+````papyrus
+; # Examples
+;
+; ```papyrus
+; AssertIntEq(Add(1, 2), 3)
+; ```
+Int Function Add(Int a, Int b) Global
+{Adds.}                            ; { } is in the .pex, shown in the Creation Kit: the summary only
+````
+
+VS Code: `▶︎ Run Test` | `⚙︎ Debug` above each test, `▶︎ Run Doctest` above each example — breakpoints · steps · call stack · variables · watch expressions (no calls).
 
 ## Contributing
 

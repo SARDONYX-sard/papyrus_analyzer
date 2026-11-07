@@ -28,13 +28,17 @@ export async function runServerTask(args: string[], cwd: string, name: string): 
   await vscode.tasks.executeTask(task);
 }
 
-/** `papyrus_analyzer test FILES...`: the tests of these scripts or folders. */
-export async function runTests(files: string[]): Promise<void> {
+/**
+ * `papyrus_analyzer test FILES...`: the tests of these scripts or folders;
+ * `doc`: their doc tests only (`--doc`).
+ */
+export async function runTests(files: string[], doc = false): Promise<void> {
   if (files.length === 0) {
     return;
   }
   const cwd = projectDir(files[0]);
   const args = files.map((f) => path.relative(cwd, f) || ".");
-  const name = files.length === 1 ? `test ${path.basename(files[0])}` : `test ${files.length} paths`;
-  await runServerTask(["test", ...args], cwd, name);
+  const what = doc ? "doc test" : "test";
+  const name = files.length === 1 ? `${what} ${path.basename(files[0])}` : `${what} ${files.length} paths`;
+  await runServerTask(["test", ...(doc ? ["--doc"] : []), ...args], cwd, name);
 }

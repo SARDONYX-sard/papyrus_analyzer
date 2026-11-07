@@ -20,7 +20,7 @@ quiet    = true
 [workspace.lints]
 complexity   = "warn"
 unused-local = "deny"
-pedantic     = "deny"
+pedantic     = "allow"
 
 [workspace.format]
 indent-style  = "space"

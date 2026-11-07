@@ -166,7 +166,7 @@ fn built_in_methods_have_examples_that_parse() {
         Builtin::OnEndState,
     ];
     for b in all {
-        let docs = b.docs();
+        let docs = b.docs_source();
         let section = docs
             .split("# Examples")
             .nth(1)

@@ -3,7 +3,8 @@ Ends an `If` statement.
 # Examples
 
 ```papyrus
+# Bool ready = True
 If ready
-    Start()
+    Debug.Trace("ready")
 EndIf
 ```

@@ -256,6 +256,12 @@
         "command": "papyrus.explorer.runTests"
       },
       {
+        "title": "Run Doc Tests",
+        "category": "Papyrus",
+        "icon": "$(book)",
+        "command": "papyrus.explorer.runDocTests"
+      },
+      {
         "title": "Open",
         "category": "Papyrus",
         "command": "papyrus.explorer.open"
@@ -479,6 +485,10 @@
           "when": "false"
         },
         {
+          "command": "papyrus.explorer.runDocTests",
+          "when": "false"
+        },
+        {
           "command": "papyrus.explorer.assemble",
           "when": "false"
         }
@@ -534,43 +544,53 @@
           "group": "inline@2"
         },
         {
+          "command": "papyrus.explorer.runDocTests",
+          "when": "view == papyrus.explorer && viewItem =~ /^papyrusFile.*Doc$/",
+          "group": "inline@0"
+        },
+        {
           "command": "papyrus.explorer.compile",
-          "when": "view == papyrus.explorer && papyrus.explorerMode != decompile && viewItem =~ /^papyrus(File|Folder)$/",
+          "when": "view == papyrus.explorer && papyrus.explorerMode != decompile && viewItem =~ /^papyrus(File|Folder)(Doc)?$/",
           "group": "inline"
         },
         {
           "command": "papyrus.explorer.decompile",
-          "when": "view == papyrus.explorer && papyrus.explorerMode == decompile && viewItem =~ /^papyrus(File|Folder)$/",
+          "when": "view == papyrus.explorer && papyrus.explorerMode == decompile && viewItem =~ /^papyrus(File|Folder)(Doc)?$/",
           "group": "inline"
         },
         {
           "command": "papyrus.explorer.compile",
-          "when": "view == papyrus.explorer && papyrus.explorerMode != decompile && viewItem =~ /^papyrus(File|Folder)$/",
+          "when": "view == papyrus.explorer && papyrus.explorerMode != decompile && viewItem =~ /^papyrus(File|Folder)(Doc)?$/",
           "group": "1_run"
         },
         {
           "command": "papyrus.explorer.decompile",
-          "when": "view == papyrus.explorer && papyrus.explorerMode == decompile && viewItem =~ /^papyrus(File|Folder)$/",
+          "when": "view == papyrus.explorer && papyrus.explorerMode == decompile && viewItem =~ /^papyrus(File|Folder)(Doc)?$/",
           "group": "1_run"
         },
         {
           "command": "papyrus.explorer.runTests",
-          "when": "view == papyrus.explorer && viewItem =~ /^papyrus(FileTest|FolderTests)$/",
+          "when": "view == papyrus.explorer && viewItem =~ /^papyrus(FileTest|FolderTests)(Doc)?$/",
           "group": "inline"
         },
         {
           "command": "papyrus.explorer.runTests",
-          "when": "view == papyrus.explorer && viewItem =~ /^papyrus(FileTest|FolderTests)$/",
+          "when": "view == papyrus.explorer && viewItem =~ /^papyrus(FileTest|FolderTests)(Doc)?$/",
+          "group": "1_run"
+        },
+        {
+          "command": "papyrus.explorer.runDocTests",
+          "when": "view == papyrus.explorer && papyrus.explorerMode != decompile && viewItem =~ /^papyrus(File.*Doc|Folder|FolderTests)$/",
           "group": "1_run"
         },
         {
           "command": "papyrus.explorer.open",
-          "when": "view == papyrus.explorer && viewItem =~ /^papyrusFile(Other|Test)?$/",
+          "when": "view == papyrus.explorer && viewItem =~ /^papyrusFile(Other|Test)?(Doc)?$/",
           "group": "1_run"
         },
         {
           "command": "papyrus.explorer.assemble",
-          "when": "view == papyrus.explorer && viewItem =~ /^papyrusFile(Other|Test)?$/",
+          "when": "view == papyrus.explorer && viewItem =~ /^papyrusFile(Other|Test)?(Doc)?$/",
           "group": "1_run"
         }
       ]
