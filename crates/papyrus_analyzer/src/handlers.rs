@@ -582,6 +582,10 @@ impl Server {
             log::info!("{}: not formatted, not a script of the workspace", data.path.display());
             return None;
         }
+        if papyrus_project::format_excludes(&data.path) {
+            log::info!("{}: not formatted, in `exclude` of [format]", data.path.display());
+            return None;
+        }
         let text = data.open.as_ref()?.text.clone();
         let editor = &params.options;
         let options = papyrus_project::format_options_for(&data.path, |o| {

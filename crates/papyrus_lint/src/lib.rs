@@ -161,9 +161,21 @@ pub fn is_known_name(name: &str) -> bool {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LintConfig {
     settings: Vec<(String, Level)>,
+    exclude: stdx::PathExcludes,
 }
 
 impl LintConfig {
+    /// Leaves out the scripts matching `pattern`, relative to the directory
+    /// `base`, see [`stdx::PathExcludes`]: they get no lint problems and no fixes.
+    pub fn exclude(&mut self, base: &std::path::Path, pattern: &str) {
+        self.exclude.add(base, pattern);
+    }
+
+    /// Whether the script `path` is left out.
+    pub fn is_excluded(&self, path: &std::path::Path) -> bool {
+        self.exclude.matches(path)
+    }
+
     /// Sets the level of a lint, a group, `all` or `warnings`.
     pub fn set(&mut self, name: &str, level: Level) -> Result<(), String> {
         if !is_known_name(name) {
@@ -210,7 +222,7 @@ pub fn lint_source(
     has_errors: bool,
     config: &LintConfig,
 ) -> Vec<Diagnostic> {
-    if has_errors {
+    if has_errors || config.is_excluded(&ws.file(file).path) {
         return Vec::new();
     }
     let sema = src.sema(ws, file);
@@ -262,6 +274,9 @@ pub fn ignore_fixes(
 
 /// The fixes of the reported lints applicable at `range` of `file`.
 pub fn fixes(ws: &Workspace, file: FileId, range: TextRange, config: &LintConfig) -> Vec<Assist> {
+    if config.is_excluded(&ws.file(file).path) {
+        return Vec::new();
+    }
     let handlers: Vec<Handler> =
         LINTS.iter().filter(|l| config.level(l) != Level::Allow).filter_map(|l| l.fix).collect();
     papyrus_ide::assists::run_handlers(ws, file, range, &handlers)

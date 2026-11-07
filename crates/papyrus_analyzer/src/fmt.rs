@@ -45,6 +45,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     for path in &paths {
         collect(path, &mut scripts);
     }
+    scripts.retain(|s| !papyrus_project::format_excludes(s));
 
     let sources: Vec<Result<Source, String>> = scripts.iter().map(|s| Source::read(s)).collect();
     let mut ws = workspace(&scripts);

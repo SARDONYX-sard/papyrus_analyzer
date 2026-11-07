@@ -158,6 +158,8 @@ struct RawFormat {
     newline: Option<Spanned<String>>,
     #[serde(alias = "final_newline")]
     final_newline: Option<bool>,
+    #[serde(default)]
+    exclude: Vec<Spanned<String>>,
 }
 
 /// The `[format]` table: formatter settings shared by the team. Unset values
@@ -184,6 +186,8 @@ pub struct FormatSettings {
     pub newline: Option<papyrus_fmt::Newline>,
     /// `final-newline`
     pub final_newline: Option<bool>,
+    /// `exclude`: the scripts left as they are.
+    pub exclude: stdx::PathExcludes,
 }
 
 impl FormatSettings {
@@ -201,6 +205,7 @@ impl FormatSettings {
         self.max_width = other.max_width.or(self.max_width);
         self.newline = other.newline.or(self.newline);
         self.final_newline = other.final_newline.or(self.final_newline);
+        self.exclude.extend(other.exclude);
     }
 
     /// Applies the set values to formatter options.
@@ -252,14 +257,31 @@ impl FormatSettings {
 /// Adds the settings of a `[lints]` table to `config`: they win over the
 /// ones already there (of the workspace). `name = "level"` or
 /// `name = { level = "level" }`, by lint, group or `all`, as in the `[lints]` of
-/// `Cargo.toml`.
+/// `Cargo.toml`; `exclude` is relative to `base`, the directory of the manifest.
 pub(crate) fn lint_settings_into(
     config: &mut papyrus_lint::LintConfig,
     raw: &BTreeMap<String, Spanned<toml::Value>>,
+    base: &Path,
     errors: &mut Vec<ManifestError>,
 ) {
     for (name, value) in raw {
         let span = Some(value.span()).filter(|r| !r.is_empty());
+        if name == "exclude" {
+            let patterns = value.get_ref().as_array().and_then(|patterns| {
+                patterns.iter().map(toml::Value::as_str).collect::<Option<Vec<&str>>>()
+            });
+            let Some(patterns) = patterns else {
+                errors.push(ManifestError::new("`exclude` must be a list of patterns", span));
+                continue;
+            };
+            for pattern in patterns {
+                match check_exclude(pattern) {
+                    Ok(()) => config.exclude(base, pattern),
+                    Err(message) => errors.push(ManifestError::new(message, span.clone())),
+                }
+            }
+            continue;
+        }
         let level = match value.get_ref() {
             toml::Value::String(s) => Some(s.as_str()),
             toml::Value::Table(t) => t.get("level").and_then(toml::Value::as_str),
@@ -279,7 +301,18 @@ pub(crate) fn lint_settings_into(
     }
 }
 
-/// Reads only the lint levels of a manifest: `[workspace.lints]` of its
+/// What a pattern of `exclude` cannot be.
+fn check_exclude(pattern: &str) -> Result<(), String> {
+    if pattern.trim().is_empty() {
+        return Err("a pattern of `exclude` cannot be empty".to_owned());
+    }
+    if pattern.starts_with('!') {
+        return Err(format!("`{pattern}`: patterns of `exclude` cannot start with `!`"));
+    }
+    Ok(())
+}
+
+/// Reads only the lint settings of a manifest: `[workspace.lints]` of its
 /// workspace, then its `[lints]`. Like [`load_format`], the values need no
 /// variables.
 pub fn load_lints(manifest_path: &Path) -> Result<papyrus_lint::LintConfig, Vec<ManifestError>> {
@@ -292,14 +325,25 @@ pub fn load_lints(manifest_path: &Path) -> Result<papyrus_lint::LintConfig, Vec<
     let mut config = papyrus_lint::LintConfig::default();
     if let Some((root, ws)) = workspace::workspace_of(manifest_path) {
         let mut inherited = Vec::new();
-        lint_settings_into(&mut config, &ws.lints, &mut inherited);
+        lint_settings_into(&mut config, &ws.lints, parent_dir(&root), &mut inherited);
         errors.extend(inherited.into_iter().map(|e| e.in_file(&root)));
     }
-    lint_settings_into(&mut config, &raw.lints, &mut errors);
+    lint_settings_into(&mut config, &raw.lints, parent_dir(manifest_path), &mut errors);
     if errors.is_empty() { Ok(config) } else { Err(errors) }
 }
 
-fn format_settings(raw: &RawFormat, errors: &mut Vec<ManifestError>) -> FormatSettings {
+/// The directory of a manifest.
+fn parent_dir(manifest_path: &Path) -> &Path {
+    manifest_path.parent().unwrap_or(Path::new(""))
+}
+
+/// The settings of a `[format]` table; `exclude` is relative to `base`, the
+/// directory of the manifest.
+fn format_settings(
+    raw: &RawFormat,
+    base: &Path,
+    errors: &mut Vec<ManifestError>,
+) -> FormatSettings {
     let span = |r: Range<usize>| Some(r).filter(|r| !r.is_empty());
     let mut out = FormatSettings {
         max_blank_lines: raw.max_blank_lines,
@@ -307,6 +351,12 @@ fn format_settings(raw: &RawFormat, errors: &mut Vec<ManifestError>) -> FormatSe
         final_newline: raw.final_newline,
         ..Default::default()
     };
+    for pattern in &raw.exclude {
+        match check_exclude(pattern.get_ref()) {
+            Ok(()) => out.exclude.add(base, pattern.get_ref()),
+            Err(message) => errors.push(ManifestError::new(message, span(pattern.span()))),
+        }
+    }
     if let Some(style) = &raw.indent_style {
         out.use_tabs = match style.get_ref().to_ascii_lowercase().as_str() {
             "tab" => Some(true),
@@ -574,10 +624,10 @@ pub fn load_format(manifest_path: &Path) -> Result<FormatSettings, Vec<ManifestE
     let text = std::fs::read_to_string(manifest_path).map_err(|e| {
         vec![ManifestError::new(format!("cannot read {}: {e}", manifest_path.display()), None)]
     })?;
-    let own = parse_format(&text)?;
+    let own = parse_format_in(&text, parent_dir(manifest_path))?;
     let Some((root, ws)) = workspace::workspace_of(manifest_path) else { return Ok(own) };
     let mut errors = Vec::new();
-    let mut settings = format_settings(&ws.format, &mut errors);
+    let mut settings = format_settings(&ws.format, parent_dir(&root), &mut errors);
     if !errors.is_empty() {
         return Err(errors.into_iter().map(|e| e.in_file(&root)).collect());
     }
@@ -585,13 +635,24 @@ pub fn load_format(manifest_path: &Path) -> Result<FormatSettings, Vec<ManifestE
     Ok(settings)
 }
 
-/// Parses only the `[format]` table of manifest text.
-pub fn parse_format(text: &str) -> Result<FormatSettings, Vec<ManifestError>> {
+/// Parses only the `[format]` table of the text of a manifest of the directory
+/// `base`.
+fn parse_format_in(text: &str, base: &Path) -> Result<FormatSettings, Vec<ManifestError>> {
     let raw: RawManifest = toml::from_str(text)
         .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span())])?;
     let mut errors = Vec::new();
-    let settings = format_settings(&raw.format, &mut errors);
+    let settings = format_settings(&raw.format, base, &mut errors);
     if errors.is_empty() { Ok(settings) } else { Err(errors) }
+}
+
+/// Whether `[format] exclude` of the manifest found above `script` leaves it out.
+pub fn format_excludes(script: &Path) -> bool {
+    let script = std::path::absolute(script).unwrap_or_else(|_| script.to_path_buf());
+    script
+        .parent()
+        .and_then(find_manifest_upwards)
+        .and_then(|manifest| load_format(&manifest).ok())
+        .is_some_and(|settings| settings.exclude.matches(&script))
 }
 
 /// The formatter options of a script: defaults, then `base` (e.g. the editor
@@ -689,9 +750,9 @@ pub(crate) fn parse_with(
     let mut extra_args: Vec<String> = inherited.map(|i| i.args.clone()).unwrap_or_default();
     extra_args.extend(raw.compiler.args.iter().map(|a| resolver.expand(a, None)));
     let mut format = inherited.map(|i| i.format.clone()).unwrap_or_default();
-    format.merge(format_settings(&raw.format, &mut resolver.errors));
+    format.merge(format_settings(&raw.format, &root, &mut resolver.errors));
     let mut lints = inherited.map(|i| i.lints.clone()).unwrap_or_default();
-    lint_settings_into(&mut lints, &raw.lints, &mut resolver.errors);
+    lint_settings_into(&mut lints, &raw.lints, &root, &mut resolver.errors);
     let test_sources: Vec<PathBuf> = raw.test.sources.iter().map(|p| resolver.path(p)).collect();
     let dependencies: Vec<(String, PathBuf)> = raw
         .dependencies
@@ -1311,6 +1372,48 @@ mod tests {
             old.level(papyrus_lint::find("unreachable-code").unwrap()),
             papyrus_lint::Level::Warn
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn excludes_add_up_in_a_workspace() {
+        let dir = std::env::temp_dir().join(format!("papyrus-exclude-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("App/src")).unwrap();
+        let w = |p: &str, text: &str| std::fs::write(dir.join(p), text).unwrap();
+        w(
+            "papyrus.toml",
+            "[workspace]\nmembers = [\"App\"]\n[workspace.lints]\nexclude = [\"App/shared/**\"]\n[workspace.format]\nexclude = [\"App/shared/**\"]\n",
+        );
+        w(
+            "App/papyrus.toml",
+            "[package]\nname = \"App\"\n[lints]\nexclude = [\"src/gen\"]\nall = \"warn\"\n[format]\nexclude = [\"src/gen\"]\n",
+        );
+
+        let project = load_workspace(&dir.join("App/papyrus.toml"), &vars()).unwrap();
+        let on_its_own = load_lints(&dir.join("App/papyrus.toml")).unwrap();
+        for config in [&on_its_own, &project.members[0].lints] {
+            assert!(!config.is_excluded(&dir.join("App/src/T.psc")));
+            assert!(config.is_excluded(&dir.join("App/src/gen/T.psc")));
+            assert!(config.is_excluded(&dir.join("App/shared/T.psc")));
+            // The other settings of the table still count.
+            let level = config.level(papyrus_lint::find("unchecked-cast").unwrap());
+            assert_eq!(level, papyrus_lint::Level::Warn);
+        }
+
+        assert!(!format_excludes(&dir.join("App/src/T.psc")));
+        assert!(format_excludes(&dir.join("App/src/gen/T.psc")));
+        assert!(format_excludes(&dir.join("App/shared/T.psc")));
+        let member = &project.members[0];
+        assert!(member.format.exclude.matches(&dir.join("App/shared/T.psc")));
+
+        // Mistakes are reported.
+        w("App/papyrus.toml", "[lints]\nexclude = \"src\"\n");
+        assert!(load_lints(&dir.join("App/papyrus.toml")).is_err());
+        w("App/papyrus.toml", "[lints]\nexclude = [\"!src\"]\n");
+        assert!(load_lints(&dir.join("App/papyrus.toml")).is_err());
+        w("App/papyrus.toml", "[format]\nexclude = [\"!src\"]\n");
+        assert!(load_format(&dir.join("App/papyrus.toml")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

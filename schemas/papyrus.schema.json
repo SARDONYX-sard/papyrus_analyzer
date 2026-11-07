@@ -134,6 +134,10 @@
         }
       },
       "properties": {
+        "exclude": {
+          "$ref": "#/definitions/exclude",
+          "description": "Scripts without lint problems nor fixes, e.g. [\"src/vendor\", \"**/*_gen.psc\"]. Relative to this file; `*` any text of a name, `?` one character, `**` any directories. Without `/` at any depth; a directory leaves out what is below it. Case is ignored. A workspace and its members add up."
+        },
         "all": {
           "$ref": "#/properties/lints/definitions/level",
           "description": "Every lint."
@@ -233,6 +237,10 @@
       "additionalProperties": false,
       "description": "Formatter settings shared by the team. Unset values come from .editorconfig, then from the editor.",
       "properties": {
+        "exclude": {
+          "$ref": "#/definitions/exclude",
+          "description": "Scripts left as they are, e.g. [\"src/vendor\", \"**/*_gen.psc\"]. Relative to this file; `*` any text of a name, `?` one character, `**` any directories. Without `/` at any depth; a directory leaves out what is below it. Case is ignored. A workspace and its members add up."
+        },
         "indent-style": {
           "description": "Indent with spaces or tabs.",
           "type": "string",
@@ -404,6 +412,11 @@
     }
   },
   "definitions": {
+    "exclude": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[^!]" },
+      "default": []
+    },
     "nameCase": {
       "default": "canonical",
       "type": "string",

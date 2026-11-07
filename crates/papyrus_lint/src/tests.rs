@@ -5,6 +5,23 @@ use papyrus_ide::{Severity, Workspace};
 use crate::{Level, LintConfig, find, fix_all, lint};
 
 #[test]
+fn excluded_scripts_get_no_problems_nor_fixes() {
+    let src = "ScriptName T\nFunction F()\n    Int a = 1\nEndFunction\n";
+    let mut config = LintConfig::default();
+    config.exclude(std::path::Path::new("/ws"), "vendor");
+    let mut ws = Workspace::new();
+    let kept = ws.set_open(PathBuf::from("/ws/T.psc"), Arc::from(src), 0);
+    assert_eq!(lint(&ws, kept, &config).len(), 1);
+    let file = ws.set_open(PathBuf::from("/ws/vendor/T.psc"), Arc::from(src), 0);
+    assert!(lint(&ws, file, &config).is_empty());
+    let cursor = papyrus_ide::TextRange::empty(papyrus_ide::TextSize::new(38));
+    assert!(crate::fixes(&ws, file, cursor, &config).is_empty());
+    assert!(crate::ignore_fixes(&ws, file, cursor, &config).is_empty());
+    let (fixed, applied) = fix_all(&mut ws, file, &config, true);
+    assert_eq!((fixed.as_str(), applied), (src, 0));
+}
+
+#[test]
 fn levels_by_name_group_and_all() {
     let unused = find("unused-local").unwrap();
     let bool_cmp = find("bool-literal-comparison").unwrap();

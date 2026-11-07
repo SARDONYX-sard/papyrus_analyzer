@@ -275,8 +275,8 @@ fn inherited(
     let imports: Vec<PathBuf> = ws.build.imports.iter().filter_map(&mut path).collect();
     let flags = ws.build.flags.as_ref().and_then(&mut path);
     let mut lints = papyrus_lint::LintConfig::default();
-    lint_settings_into(&mut lints, &ws.lints, &mut errors);
-    let format = format_settings(&ws.format, &mut errors);
+    lint_settings_into(&mut lints, &ws.lints, dir, &mut errors);
+    let format = format_settings(&ws.format, dir, &mut errors);
     if !errors.is_empty() {
         return Err(errors.into_iter().map(|e| e.in_file(root)).collect());
     }

@@ -488,6 +488,7 @@ dependencies = [
  "papyrus_lint",
  "serde",
  "skyrim_data_dir",
+ "stdx",
  "toml",
 ]
 

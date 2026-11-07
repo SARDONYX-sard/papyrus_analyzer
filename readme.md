@@ -100,11 +100,13 @@ sources = ["tests"]             # test scripts: see the built-in PapyrusAnalyzer
 MCMHelper = { path = "../MCMHelper" }
 
 [lints]                         # lint name | group | "all" = level
+exclude = ["src/vendor"]        # scripts without lint problems nor fixes: * ? ** ; a workspace and its members add up
 all = "warn"                    # "allow" | "warn" | "deny"
 complexity = "allow"            # group: correctness | suspicious | complexity | style | pedantic
 unused-local = { level = "deny" }   # "level" | { level = "level" }
 
 [format]                        # unset → .editorconfig → editor settings
+exclude = ["**/*_gen.psc"]      # scripts left as they are
 indent-style = "space"          # "space" | "tab"
 indent-size = 4                 # 1..=16
 keyword-case = "canonical"      # "canonical" | "preserve" | "PascalCase" | "camelCase" | "lowercase" | "UPPERCASE"
