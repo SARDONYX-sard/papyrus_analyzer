@@ -10,9 +10,13 @@
 //! - `RegisterForUpdate`, `RegisterForSingleUpdate`, their `GameTime`
 //!   versions and `UnregisterForUpdate*` of `Form`, `Alias` and
 //!   `ActiveMagicEffect`: schedule `OnUpdate` / `OnUpdateGameTime`;
+//! - `RegisterForModEvent`, `SendModEvent`, `ModEvent.*`: custom events, whose
+//!   callbacks run when sent;
+//! - `Game.GetPlayer`: one object of the script `Actor`;
 //! - `StringUtil.GetLength`, `StringUtil.Substring`, `StringUtil.Find`;
-//! - `PapyrusAnalyzer.Assert*`, see [`PAPYRUS_ANALYZER_PSC`]: a failed
-//!   assertion is an error of [`Vm::errors`], which fails the test.
+//! - `PapyrusAnalyzer`, see [`PAPYRUS_ANALYZER_PSC`]: objects for tests, the native
+//!   calls made, and assertions: a failed one is an error of [`Vm::errors`], which
+//!   fails the test.
 
 use std::rc::Rc;
 
@@ -54,38 +58,7 @@ pub const PAPYRUS_ANALYZER: &str = "PapyrusAnalyzer";
 /// `PapyrusAnalyzer.psc`, built into papyrus_analyzer: the assertions of
 /// tests, for the test directories only. Only `Native` declarations, which
 /// the machine implements. `Import PapyrusAnalyzer` calls them unqualified.
-pub const PAPYRUS_ANALYZER_PSC: &str = r#"ScriptName PapyrusAnalyzer Hidden
-{Built into papyrus_analyzer, for the scripts of the [test] sources of papyrus.toml.
-Assertions of `papyrus_analyzer test`: a failure fails the test.
-`Import PapyrusAnalyzer` calls them without `PapyrusAnalyzer.`.}
-
-Function AssertIntEq(Int aiActual, Int aiExpected, String asMessage = "") Global Native
-{Fails unless aiActual == aiExpected.}
-
-Function AssertFloatEq(Float afActual, Float afExpected, Float afEpsilon = 0.0001, String asMessage = "") Global Native
-{Fails unless afActual is within afEpsilon of afExpected.}
-
-Function AssertStringEq(String asActual, String asExpected, String asMessage = "") Global Native
-{Fails unless asActual == asExpected (ignoring case, like Papyrus).}
-
-Function AssertBoolEq(Bool abActual, Bool abExpected, String asMessage = "") Global Native
-{Fails unless abActual == abExpected.}
-
-Function AssertTrue(Bool abValue, String asMessage = "") Global Native
-{Fails unless abValue is True.}
-
-Function AssertFalse(Bool abValue, String asMessage = "") Global Native
-{Fails unless abValue is False.}
-
-Function AssertNone(Form akForm, String asMessage = "") Global Native
-{Fails unless akForm is None.}
-
-Function AssertNotNone(Form akForm, String asMessage = "") Global Native
-{Fails when akForm is None.}
-
-Function Fail(String asMessage) Global Native
-{Fails the test.}
-"#;
+pub const PAPYRUS_ANALYZER_PSC: &str = include_str!("PapyrusAnalyzer.psc");
 
 /// Records a failed assertion.
 fn fail(vm: &mut Vm, what: String, message: &Value) -> Value {
@@ -129,10 +102,135 @@ fn register_asserts(vm: &mut Vm) {
     vm.register_native(S, "AssertNotNone", check(true, "expected an object, got None"));
     vm.register_native(S, "AssertNone", check(false, "expected None"));
     vm.register_native(S, "Fail", |vm, _, args| fail(vm, "failed".to_owned(), &arg(args, 0)));
+
+    for name in ["NewObject", "NewAlias", "NewEffect"] {
+        vm.register_native(S, name, |vm, _, args| {
+            let script = text(vm, args, 0);
+            match vm.new_object(&script) {
+                Ok(obj) => {
+                    if let Err(e) = vm.send_event(obj, "OnInit", &[]) {
+                        vm.abort = Some(e);
+                    }
+                    Value::Object(obj)
+                }
+                Err(e) => fail(vm, format!("cannot create the object: {e}"), &Value::None),
+            }
+        });
+    }
+    vm.register_native(S, "CallCount", |vm, _, args| {
+        let native = text(vm, args, 0);
+        Value::Int(vm.count_calls(&native, None) as i32)
+    });
+    vm.register_native(S, "AssertCalled", |vm, _, args| {
+        let native = text(vm, args, 0);
+        assert_called(vm, &native, None, arg(args, 1).as_int(), &arg(args, 2))
+    });
+    vm.register_native(S, "AssertNotCalled", |vm, _, args| {
+        let native = text(vm, args, 0);
+        assert_called(vm, &native, None, 0, &arg(args, 1))
+    });
+    vm.register_native(S, "AssertCalledOn", |vm, _, args| {
+        let native = text(vm, args, 1);
+        let Value::Object(obj) = arg(args, 0) else {
+            return fail(vm, format!("{native} called on None"), &arg(args, 3));
+        };
+        assert_called(vm, &native, Some(obj), arg(args, 2).as_int(), &arg(args, 3))
+    });
+}
+
+/// Fails unless `native` was called `times` times; negative: at least once.
+fn assert_called(
+    vm: &mut Vm,
+    native: &str,
+    on: Option<ObjId>,
+    times: i32,
+    message: &Value,
+) -> Value {
+    let count = vm.count_calls(native, on) as i32;
+    let ok = if times < 0 { count > 0 } else { count == times };
+    if ok {
+        return Value::None;
+    }
+    let expected = if times < 0 { "at least once".to_owned() } else { format!("{times} times") };
+    fail(vm, format!("expected {native} to be called {expected}, called {count} times"), message)
+}
+
+/// The custom events of SKSE.
+fn register_mod_events(vm: &mut Vm) {
+    for script in ["Form", "Alias", "ActiveMagicEffect"] {
+        vm.register_native(script, "RegisterForModEvent", |vm, this, args| {
+            if let Some(obj) = this {
+                let (event, callback) = (text(vm, args, 0), text(vm, args, 1));
+                vm.register_mod_event(obj, &event, callback);
+            }
+            Value::None
+        });
+        vm.register_native(script, "UnregisterForModEvent", |vm, this, args| {
+            if let Some(obj) = this {
+                let event = text(vm, args, 0);
+                vm.unregister_mod_event(obj, Some(&event));
+            }
+            Value::None
+        });
+        vm.register_native(script, "UnregisterForAllModEvents", |vm, this, _| {
+            if let Some(obj) = this {
+                vm.unregister_mod_event(obj, None);
+            }
+            Value::None
+        });
+        vm.register_native(script, "SendModEvent", |vm, this, args| {
+            let event = text(vm, args, 0);
+            // eventName, strArg, numArg, sender.
+            let sender = this.map_or(Value::None, Value::Object);
+            let sent = [Value::Str(Rc::from(event.as_str())), arg(args, 1), arg(args, 2), sender];
+            vm.send_mod_event(&event, &sent);
+            Value::None
+        });
+    }
+
+    const M: &str = "ModEvent";
+    vm.register_native(M, "Create", |vm, _, args| {
+        let event = text(vm, args, 0);
+        vm.mod_events.push(Some((event, Vec::new())));
+        Value::Int(vm.mod_events.len() as i32)
+    });
+    for name in ["PushBool", "PushInt", "PushFloat", "PushString", "PushForm"] {
+        vm.register_native(M, name, |vm, _, args| {
+            if let Some(Some((_, pushed))) = mod_event(vm, &arg(args, 0)) {
+                pushed.push(arg(args, 1));
+            }
+            Value::None
+        });
+    }
+    vm.register_native(M, "Send", |vm, _, args| {
+        match mod_event(vm, &arg(args, 0)).map(Option::take) {
+            Some(Some((event, pushed))) => {
+                vm.send_mod_event(&event, &pushed);
+                Value::Bool(true)
+            }
+            _ => Value::Bool(false),
+        }
+    });
+    vm.register_native(M, "Release", |vm, _, args| {
+        if let Some(event) = mod_event(vm, &arg(args, 0)) {
+            *event = None;
+        }
+        Value::None
+    });
+}
+
+/// The event of a handle of `ModEvent.Create`.
+fn mod_event<'a>(vm: &'a mut Vm, handle: &Value) -> Option<&'a mut Option<(String, Vec<Value>)>> {
+    let index = usize::try_from(handle.as_int()).ok()?.checked_sub(1)?;
+    vm.mod_events.get_mut(index)
 }
 
 pub(crate) fn register_builtins(vm: &mut Vm) {
     register_asserts(vm);
+    register_mod_events(vm);
+    vm.register_native("Game", "GetPlayer", |vm, _, _| {
+        vm.player().map_or(Value::None, Value::Object)
+    });
     for name in ["Trace", "Notification", "MessageBox", "TraceStack"] {
         vm.register_native("Debug", name, |vm, _, args| {
             vm.output.push(text(vm, args, 0));

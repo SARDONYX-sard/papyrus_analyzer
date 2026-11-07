@@ -17,6 +17,7 @@
 mod apply_demorgan;
 mod check_none;
 mod fix_script_name;
+mod import_script;
 mod inline_local_variable;
 mod inline_script_variable;
 
@@ -100,6 +101,8 @@ const HANDLERS: &[Handler] = &[
     check_none::check_none,
     inline_local_variable::inline_local_variable,
     inline_script_variable::inline_script_variable,
+    import_script::inline_import,
+    import_script::add_import,
 ];
 
 /// The assists applicable to `range` of `file`.
@@ -195,6 +198,16 @@ pub mod test_utils {
     /// Runs `handler` with the cursor at `$0` (or the selection between two
     /// `$0`) of `before` in a file `path`, and applies the first assist.
     fn run(handler: Handler, path: &str, before: &str) -> Option<String> {
+        run_with(handler, &[], path, before)
+    }
+
+    /// Like [`run`], with the other scripts `others`: `(name, text)`.
+    fn run_with(
+        handler: Handler,
+        others: &[(&str, &str)],
+        path: &str,
+        before: &str,
+    ) -> Option<String> {
         let first = before.find("$0").expect("no $0 cursor");
         let text = before.replacen("$0", "", 1);
         let (text, range) = match text.find("$0") {
@@ -205,6 +218,9 @@ pub mod test_utils {
             None => (text, TextRange::empty(TextSize::new(first as u32))),
         };
         let mut ws = Workspace::new();
+        for (name, other) in others {
+            ws.set_open(PathBuf::from(format!("/ws/{name}.psc")), Arc::from(*other), 0);
+        }
         let file = ws.set_open(PathBuf::from(path), Arc::from(text.as_str()), 0);
         with_sema(&ws, file, |sema| {
             let mut acc = Vec::new();
@@ -239,5 +255,21 @@ pub mod test_utils {
     /// Checks that the assist does not apply.
     pub fn check_assist_not_applicable(handler: Handler, before: &str) {
         assert_eq!(run(handler, "/ws/T.psc", before), None);
+    }
+
+    /// Like [`check_assist`], with the other scripts `others`: `(name, text)`.
+    pub fn check_assist_with(handler: Handler, others: &[(&str, &str)], before: &str, after: &str) {
+        let result = run_with(handler, others, "/ws/T.psc", before)
+            .unwrap_or_else(|| panic!("not applicable:\n{before}"));
+        assert_eq!(result, after);
+    }
+
+    /// Like [`check_assist_not_applicable`], with the other scripts `others`.
+    pub fn check_assist_not_applicable_with(
+        handler: Handler,
+        others: &[(&str, &str)],
+        before: &str,
+    ) {
+        assert_eq!(run_with(handler, others, "/ws/T.psc", before), None);
     }
 }

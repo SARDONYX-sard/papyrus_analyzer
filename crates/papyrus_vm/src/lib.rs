@@ -22,7 +22,8 @@
 //! Unlike the game, one thread runs everything: a call runs to completion,
 //! `Utility.Wait` only advances [`Vm::clock`], sending on the way the
 //! `OnUpdate` / `OnUpdateGameTime` events registered with `RegisterForUpdate`
-//! and the like ([`Vm::advance`]). Other events are sent by calling them
+//! and the like ([`Vm::advance`]). The callbacks of `SendModEvent` run when it is
+//! called. Other events are sent by calling them
 //! ([`Vm::send_event`]). Errors the game logs (a call on
 //! `None`, an index out of bounds) go to [`Vm::errors`], and the code goes on
 //! with a default value, like in the game.
@@ -60,6 +61,8 @@ pub struct NativeCall {
     pub script: String,
     /// The function, as declared.
     pub function: String,
+    /// The object it was called on; `None` for global functions.
+    pub this: Option<ObjId>,
     /// The arguments.
     pub args: Vec<Value>,
     /// Whether an implementation ran (else: the default value).
@@ -146,6 +149,14 @@ struct Timer {
     every: Option<f32>,
 }
 
+/// A registration of `RegisterForModEvent`.
+struct ModEventListener {
+    obj: ObjId,
+    /// The name of the event, lowercase.
+    event: String,
+    callback: String,
+}
+
 /// The machine.
 pub struct Vm {
     loader: Box<dyn ScriptLoader>,
@@ -170,6 +181,12 @@ pub struct Vm {
     pub step_limit: u64,
     depth: usize,
     timers: Vec<Timer>,
+    mod_event_listeners: Vec<ModEventListener>,
+    /// The events of `ModEvent.Create`, by handle - 1: the name and the arguments
+    /// pushed; `None` once sent or released.
+    mod_events: Vec<Option<(String, Vec<Value>)>>,
+    /// The object of `Game.GetPlayer`.
+    player: Option<ObjId>,
     /// An error of an event sent by a native, which stops the run when the
     /// native returns.
     abort: Option<VmError>,
@@ -196,12 +213,28 @@ impl Vm {
             step_limit: 10_000_000,
             depth: 0,
             timers: Vec::new(),
+            mod_event_listeners: Vec::new(),
+            mod_events: Vec::new(),
+            player: None,
             abort: None,
             debugger: None,
             stack: Vec::new(),
         };
         natives::register_builtins(&mut vm);
         vm
+    }
+
+    /// Starts a new test: forgets what the previous one left, its output and native
+    /// calls, and the update and custom events of its objects, which would fire
+    /// during this one. Objects stay, unused.
+    pub fn begin_test(&mut self) {
+        self.output.clear();
+        self.errors.clear();
+        self.native_calls.clear();
+        self.timers.clear();
+        self.mod_event_listeners.clear();
+        self.mod_events.clear();
+        self.player = None;
     }
 
     /// Implements the native `script.function` (any case).
@@ -440,6 +473,67 @@ impl Vm {
         self.timers.retain(|t| t.obj != obj || t.game_time != game_time);
     }
 
+    /// Registers `obj` for the custom event `event`, calling `callback`; replaces
+    /// its previous registration for it.
+    pub(crate) fn register_mod_event(&mut self, obj: ObjId, event: &str, callback: String) {
+        self.unregister_mod_event(obj, Some(event));
+        self.mod_event_listeners.push(ModEventListener { obj, event: key(event), callback });
+    }
+
+    /// Unregisters `obj` from the custom event `event`, or from all of them.
+    pub(crate) fn unregister_mod_event(&mut self, obj: ObjId, event: Option<&str>) {
+        let event = event.map(key);
+        self.mod_event_listeners
+            .retain(|l| l.obj != obj || event.as_ref().is_some_and(|e| *e != l.event));
+    }
+
+    /// Calls the callbacks of the custom event `event`, in the order they
+    /// registered. Unlike the game, where they run later, one thread runs
+    /// everything: they run now. An error of one stops the run.
+    pub(crate) fn send_mod_event(&mut self, event: &str, args: &[Value]) {
+        let event = key(event);
+        let listeners: Vec<(ObjId, String)> = (self.mod_event_listeners.iter())
+            .filter(|l| l.event == event)
+            .map(|l| (l.obj, l.callback.clone()))
+            .collect();
+        for (obj, callback) in listeners {
+            if let Err(e) = self.send_event(obj, &callback, args) {
+                self.abort = Some(e);
+                return;
+            }
+        }
+    }
+
+    /// The object of `Game.GetPlayer`, of the script `Actor`, created when asked
+    /// for; `None` without that script.
+    pub(crate) fn player(&mut self) -> Option<ObjId> {
+        if self.player.is_none() {
+            self.player = self.new_object("Actor").ok();
+        }
+        self.player
+    }
+
+    /// How many native calls match `native`: `Function` of any script, or
+    /// `Script.Function`, where `Script` may extend the script declaring it, like
+    /// `Actor.Disable` for `ObjectReference.Disable`. `on`: only those on this
+    /// object.
+    pub(crate) fn count_calls(&mut self, native: &str, on: Option<ObjId>) -> usize {
+        let (script, function) = match native.rsplit_once('.') {
+            Some((script, function)) => (Some(script), function),
+            None => (None, native),
+        };
+        let declaring: Option<Vec<String>> = script.map(|script| {
+            let mut names: Vec<String> = self.chain(script).iter().map(|s| key(&s.name)).collect();
+            names.push(key(script));
+            names
+        });
+        (self.native_calls.iter())
+            .filter(|c| c.function.eq_ignore_ascii_case(function))
+            .filter(|c| on.is_none_or(|obj| c.this == Some(obj)))
+            .filter(|c| declaring.as_ref().is_none_or(|names| names.contains(&key(&c.script))))
+            .count()
+    }
+
     /// Advances [`Vm::clock`] by `seconds`, sending on the way the due
     /// `OnUpdate` and `OnUpdateGameTime` events, in order.
     pub fn advance(&mut self, seconds: f32) -> Result<(), VmError> {
@@ -535,6 +629,7 @@ impl Vm {
         self.native_calls.push(NativeCall {
             script: script_name,
             function: func.name.clone(),
+            this,
             args: args.to_vec(),
             implemented: mock.is_some() || native.is_some(),
         });

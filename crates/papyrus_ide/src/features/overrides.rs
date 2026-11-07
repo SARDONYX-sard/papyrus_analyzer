@@ -158,8 +158,9 @@ fn extends(ws: &Workspace, index: &ScriptIndex, ancestor: Name) -> bool {
     false
 }
 
-/// The line of the hover of a declaration: `Overrides Quest.OnInit`.
-pub(crate) fn hover_line(sema: &Sema<'_>, def: Def) -> Option<String> {
+/// The comment after the signature in hovers, like the inlay hints:
+/// `overrides Base`, `event of Form`.
+pub(crate) fn override_comment(sema: &Sema<'_>, def: Def) -> Option<String> {
     let Def::Member { file, index } = def else { return None };
     let m = sema.member(file, index);
     if !is_overridable(m) {
@@ -168,7 +169,7 @@ pub(crate) fn hover_line(sema: &Sema<'_>, def: Def) -> Option<String> {
     let script = sema.ws.file(file).index.name?;
     let (base_script, _, kind) = base_of(sema, script, m.name)?;
     Some(match kind {
-        OverrideKind::Override => format!("Overrides `{base_script}.{}`", m.name),
-        OverrideKind::EngineEvent => format!("Event sent by the game, declared by `{base_script}`"),
+        OverrideKind::Override => format!("overrides {base_script}"),
+        OverrideKind::EngineEvent => format!("event of {base_script}"),
     })
 }

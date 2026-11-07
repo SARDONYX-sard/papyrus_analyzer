@@ -247,8 +247,10 @@ EndFunction
 | -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Fails on | failed assertion · error the game would log (call on `None`...) · `Return False`                                                             |
 | Asserts  | `AssertIntEq` · `AssertFloatEq` · `AssertStringEq` · `AssertBoolEq` · `AssertTrue` · `AssertFalse` · `AssertNone` · `AssertNotNone` · `Fail` |
+| Objects  | `NewObject("Actor") as Actor` · `NewAlias` · `NewEffect` · `Game.GetPlayer()`                                                                |
+| Calls    | `AssertCalled("Actor.Disable", 1)` · `AssertNotCalled` · `AssertCalledOn` · `CallCount`                                                      |
 | Natives  | work: `Debug.Trace` · `Math` · `StringUtil` · `Utility.Random*` — others: default value, or `#[mock]`                                        |
-| Events   | `Utility.Wait` sends the `OnUpdate` due — others: call them                                                                                  |
+| Events   | `Utility.Wait` sends the `OnUpdate` due · `SendModEvent` calls back at once — others: call them                                              |
 
 ```sh
 papyrus_analyzer test                      # every test

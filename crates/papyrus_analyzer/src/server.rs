@@ -526,9 +526,11 @@ impl Server {
             && let Some(file) = self.ws.file_id(path)
         {
             self.ws.close(file);
-            // A script of no directory of the project was known for being open.
+            // A script of no directory of the project was known for being open;
+            // the built-in ones stay.
             if !self.index_dirs().iter().any(|(d, _)| path.starts_with(d))
                 && self.ws.file_id(path) == Some(file)
+                && self.ws.file(file).origin != Origin::Builtin
             {
                 self.ws.remove(file);
             }

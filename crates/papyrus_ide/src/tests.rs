@@ -76,8 +76,9 @@ fn hover_parent_tells_the_script_and_function() {
     let md = hover(&ws, file, offset).unwrap().markdown;
     assert!(md.starts_with("`Parent` is the parent script:"), "{md}");
     assert!(
-        md.contains("ScriptName Actor")
-            && md.contains("Calls:\n\n```papyrus\nEvent OnDeath(Actor akKiller)"),
+        md.contains(
+            "Calls:\n\n```papyrus\nScriptName Actor extends Form\n```\n```papyrus\nEvent OnDeath(Actor akKiller)"
+        ),
         "{md}"
     );
 }
@@ -145,10 +146,81 @@ fn hover_member_with_docs() {
         ("Test.psc", "ScriptName Test\nFunction F(Actor a)\n  a.Ki$0ll()\nEndFunction\n"),
     ]);
     let hover = hover(&ws, file, offset).unwrap();
+    // Where it is declared first, like the module path of rust-analyzer.
     assert_eq!(
         hover.markdown,
-        "```papyrus\nFunction Kill(Actor akKiller = None) Native\n```\n*Actor*\n\n---\n\nKills the actor."
+        "```papyrus\nScriptName Actor extends Form\n```\n```papyrus\nFunction Kill(Actor akKiller = None) Native\n```\n\n---\n\nKills the actor."
     );
+}
+
+#[test]
+fn built_in_methods_have_examples_that_parse() {
+    use crate::sema::Builtin;
+    let all = [
+        Builtin::Length,
+        Builtin::Find,
+        Builtin::RFind,
+        Builtin::GoToState,
+        Builtin::GetState,
+        Builtin::OnBeginState,
+        Builtin::OnEndState,
+    ];
+    for b in all {
+        let docs = b.docs();
+        let section = docs
+            .split("# Examples")
+            .nth(1)
+            .unwrap_or_else(|| panic!("{}: no `# Examples`", b.name()));
+        let start =
+            section.find("```papyrus\n").expect("papyrus code block") + "```papyrus\n".len();
+        let code = &section[start..start + section[start..].find("```").expect("closing fence")];
+        let src =
+            if code.contains("Event ") || code.contains("Function ") || code.contains("State ") {
+                format!("ScriptName T\n{code}")
+            } else {
+                format!("ScriptName T\nFunction F()\n{code}EndFunction\n")
+            };
+        let parse = papyrus_parser::parse(&src);
+        assert!(parse.errors().is_empty(), "{}: {:?}\n{src}", b.name(), parse.errors());
+    }
+
+    // The hover shows them.
+    let src = "ScriptName T\nFunction F(Int[] a)\n    Int i = a.Fi$0nd(1)\nEndFunction\n";
+    let (ws, file, offset) = workspace(&[("T.psc", src)]);
+    let md = hover(&ws, file, offset).unwrap().markdown;
+    assert!(md.contains("# Examples\n\n```papyrus\nString[] names"), "{md}");
+}
+
+#[test]
+fn hover_tells_overrides_states_and_properties() {
+    let base = "ScriptName Base extends Actor\nInt Function Rank()\n    Return 1\nEndFunction\n";
+    let child = "ScriptName Child extends Base\nInt Function Ra$0nk()\n    Return 2\nEndFunction\nEvent OnDeath(Actor akKiller)\nEndEvent\nState Busy\n    Function Waiting()\n    EndFunction\nEndState\nInt Property Level\n    Int Function Get()\n        Return 1\n    EndFunction\nEndProperty\n";
+    let (ws, file, offset) = workspace(&[
+        ("Form.psc", FORM),
+        ("Actor.psc", ACTOR),
+        ("Base.psc", base),
+        ("Child.psc", child),
+    ]);
+    let text = ws.text(file).unwrap();
+    let head = |needle: &str| {
+        let at = TextSize::new(text.find(needle).unwrap() as u32);
+        let md = hover(&ws, file, at).unwrap().markdown;
+        md.split("\n\n---").next().unwrap().to_owned()
+    };
+    assert_eq!(
+        hover(&ws, file, offset).unwrap().markdown,
+        "```papyrus\nScriptName Child extends Base\n```\n```papyrus\nInt Function Rank() ; overrides Base\n```"
+    );
+    // Declared without `Native` in `ACTOR`: overridden, not an event of the game.
+    let on_death = head("OnDeath(");
+    assert!(
+        on_death.ends_with("Event OnDeath(Actor akKiller) ; overrides Actor\n```"),
+        "{on_death}"
+    );
+    assert!(
+        head("Waiting").starts_with("```papyrus\nScriptName Child extends Base\nState Busy\n```")
+    );
+    assert!(head("Get()").starts_with("```papyrus\nChild.Level\n```"), "{}", head("Get()"));
 }
 
 #[test]

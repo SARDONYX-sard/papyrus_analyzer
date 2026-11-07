@@ -255,24 +255,13 @@ fn parent_member(sema: &Sema<'_>, parent: papyrus_parser::SyntaxToken<'_>) -> Op
         return None;
     }
     let def = sema.resolve_name_ref(field.name_ref()?)?;
-    let info = def_info(sema, def);
-    let mut out = format!("```papyrus\n{}\n```", info.signature);
-    if let Some(container) = info.container {
-        out.push_str(&format!("\n*{container}*"));
-    }
-    Some(out)
+    Some(def_info(sema, def).markdown_head())
 }
 
 fn name_hover(sema: &Sema<'_>, offset: TextSize) -> Option<HoverResult> {
     let (range, def) = def_at(sema, offset)?;
     let info = def_info(sema, def);
-    let mut markdown = format!("```papyrus\n{}\n```", info.signature);
-    if let Some(container) = info.container {
-        markdown.push_str(&format!("\n*{container}*"));
-    }
-    if let Some(line) = super::overrides::hover_line(sema, def) {
-        markdown.push_str(&format!("\n\n{line}"));
-    }
+    let mut markdown = info.markdown_head();
     if let Some(line) = nullness_line(sema, range) {
         markdown.push_str(&format!("\n\n{line}"));
     }

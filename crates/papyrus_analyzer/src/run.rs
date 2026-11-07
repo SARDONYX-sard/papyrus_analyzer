@@ -33,7 +33,7 @@ None...) or when it returns False. `; #[mock(Script.Function)]` functions of
 the test script replace the native in its tests.
 
 The scripts of the [test] sources of papyrus.toml see the built-in script
-`PapyrusAnalyzer` (`AssertIntEq`, `AssertTrue`, `Fail`...; `Import
+`PapyrusAnalyzer` (`AssertIntEq`, `NewObject`, `AssertCalled`...; `Import
 PapyrusAnalyzer` calls them unqualified). A project script of that name wins.
 
   PATH     only the tests of the scripts of this file or directory
@@ -200,8 +200,7 @@ pub(crate) fn test(args: &[String]) -> i32 {
     // Name, output (Debug.Trace...), problem.
     let mut results: Vec<(String, Vec<String>, Option<String>)> = Vec::new();
     for Marked { script, function, .. } in tests.iter().copied() {
-        vm.output.clear();
-        vm.errors.clear();
+        vm.begin_test();
         let result = start(&mut vm, &marked, script).and_then(|obj| vm.call(obj, function, &[]));
         let name = format!("{script}.{function}");
         let problem = match &result {

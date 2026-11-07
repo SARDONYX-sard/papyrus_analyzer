@@ -76,22 +76,16 @@ impl Builtin {
         }
     }
 
-    /// Short documentation.
+    /// The documentation, with `# Examples`: Markdown files of `builtin_docs/`.
     pub fn docs(self) -> &'static str {
         match self {
-            Builtin::Length => "The number of elements of the array.",
-            Builtin::Find => {
-                "Returns the index of the first element equal to `akElement`, starting at `aiStartIndex`, or -1."
-            }
-            Builtin::RFind => {
-                "Returns the index of the last element equal to `akElement`, searching backwards from `aiStartIndex`, or -1."
-            }
-            Builtin::GoToState => {
-                "Switches the script to the state `asNewState`. `OnEndState` runs on the old state, then `OnBeginState` on the new one."
-            }
-            Builtin::GetState => "Returns the name of the current state of the script.",
-            Builtin::OnBeginState => "Sent when the script enters this state.",
-            Builtin::OnEndState => "Sent when the script leaves this state.",
+            Builtin::Length => include_str!("builtin_docs/length.md"),
+            Builtin::Find => include_str!("builtin_docs/find.md"),
+            Builtin::RFind => include_str!("builtin_docs/rfind.md"),
+            Builtin::GoToState => include_str!("builtin_docs/gotostate.md"),
+            Builtin::GetState => include_str!("builtin_docs/getstate.md"),
+            Builtin::OnBeginState => include_str!("builtin_docs/onbeginstate.md"),
+            Builtin::OnEndState => include_str!("builtin_docs/onendstate.md"),
         }
     }
 

@@ -124,10 +124,38 @@ pub(crate) fn decl_def(sema: &Sema<'_>, name: SyntaxNode<'_>) -> Option<Def> {
 pub(crate) struct DefInfo {
     /// Pseudo source code of the declaration.
     pub(crate) signature: String,
-    /// Where it is declared, e.g. `Actor` or `local variable`.
+    /// Where it is declared, as code shown above the signature, like the module
+    /// path of rust-analyzer: `ScriptName Child extends Base`, `Child.Level`.
+    pub(crate) path: Option<String>,
+    /// What it is, when it has no path, e.g. `local variable`.
     pub(crate) container: Option<String>,
     /// Rendered documentation comments.
     pub(crate) docs: String,
+}
+
+impl DefInfo {
+    /// The code blocks of the hover: the path, then the signature.
+    pub(crate) fn markdown_head(&self) -> String {
+        let mut out = String::new();
+        if let Some(path) = &self.path {
+            out.push_str(&format!("```papyrus\n{path}\n```\n"));
+        }
+        out.push_str(&format!("```papyrus\n{}\n```", self.signature));
+        if let Some(container) = &self.container {
+            out.push_str(&format!("\n*{container}*"));
+        }
+        out
+    }
+}
+
+/// `ScriptName Child extends Base`, the header of the script of `file`.
+fn script_header(sema: &Sema<'_>, file: FileId) -> String {
+    let index = &sema.ws.file(file).index;
+    let mut out = format!("ScriptName {}", index.name_str());
+    if let Some(ext) = index.extends {
+        out.push_str(&format!(" extends {ext}"));
+    }
+    out
 }
 
 pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
@@ -137,6 +165,7 @@ pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
                 Some(ty) => format!("{ty} {name}"),
                 None => name.to_string(),
             },
+            path: None,
             container: Some(
                 match kind {
                     LocalKind::Variable => "local variable",
@@ -149,14 +178,20 @@ pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
         Def::Member { file, index } => {
             let member = sema.member(file, index);
             let script = sema.ws.file(file).index.name_str();
-            let container = match (member.property, member.state) {
+            // A function of a property reads best below its property.
+            let path = match (member.property, member.state) {
                 (Some(prop), _) => format!("{script}.{prop}"),
-                (None, Some(state)) => format!("{script} (State {state})"),
-                (None, None) => script.to_owned(),
+                (None, Some(state)) => format!("{}\nState {state}", script_header(sema, file)),
+                (None, None) => script_header(sema, file),
             };
+            let mut signature = member.signature();
+            if let Some(comment) = overrides::override_comment(sema, def) {
+                signature.push_str(&format!(" ; {comment}"));
+            }
             DefInfo {
-                signature: member.signature(),
-                container: Some(container),
+                signature,
+                path: Some(path),
+                container: None,
                 docs: docs_in(sema, file, &member.docs),
             }
         }
@@ -166,21 +201,25 @@ pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
             crate::index::render_param(&mut signature, &m.params[param as usize]);
             DefInfo {
                 signature,
+                path: None,
                 container: Some(format!("parameter of {}", m.name)),
                 docs: String::new(),
             }
         }
         Def::Script { file } => {
             let index = &sema.ws.file(file).index;
-            let mut signature = format!("ScriptName {}", index.name_str());
-            if let Some(ext) = index.extends {
-                signature.push_str(&format!(" extends {ext}"));
-            }
+            let mut signature = script_header(sema, file);
             crate::index::render_flags(&mut signature, index.flags, &index.user_flags);
-            DefInfo { signature, container: None, docs: docs_in(sema, file, &index.docs) }
+            DefInfo {
+                signature,
+                path: None,
+                container: None,
+                docs: docs_in(sema, file, &index.docs),
+            }
         }
         Def::Builtin(b, elem) => DefInfo {
             signature: b.signature(elem),
+            path: None,
             container: Some("built-in".to_owned()),
             docs: b.docs().to_owned(),
         },
@@ -189,6 +228,7 @@ pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
             let def = &flags.defs[i as usize];
             DefInfo {
                 signature: def.signature(),
+                path: None,
                 container: Some(flags.source_name()),
                 docs: def.docs.clone(),
             }
@@ -197,6 +237,7 @@ pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
             let (name, docs) = language_flag_docs(kind);
             DefInfo {
                 signature: name.to_owned(),
+                path: None,
                 container: Some("language flag".to_owned()),
                 docs: docs.to_owned(),
             }

@@ -34,15 +34,40 @@ Int updates
 
 Event OnUpdate()
     updates += 1
+    RegisterForSingleUpdate(1.0)
 EndEvent
 
 ; #[test] Utility.Wait sends the OnUpdate events that are due
 Function WaitSendsUpdates()
-    RegisterForUpdate(1.0)
+    RegisterForSingleUpdate(1.0)
     Utility.Wait(3.5)
     UnregisterForUpdate()
     Utility.Wait(5.0)
     AssertIntEq(updates, 3)
+EndFunction
+
+; #[test] NewObject gives the objects the game would; then, what was asked of it
+Function ObjectsAndNativeCalls()
+    Actor akActor = NewObject("Actor") as Actor
+    AssertNotNone(akActor)
+    akActor.Disable()
+    AssertCalled("ObjectReference.Disable", 1)
+    AssertCalledOn(akActor, "Disable")
+    AssertCalledOn(Game.GetPlayer(), "Disable", 0)
+    AssertNotCalled("Delete")
+EndFunction
+
+String received
+
+Event OnTestEvent(String asName, String asArg, Float afNumber, Form akSender)
+    received = asArg
+EndEvent
+
+; #[test] the callback of a custom event runs when it is sent
+Function ModEventsCallBack()
+    RegisterForModEvent("TestEvent", "OnTestEvent")
+    SendModEvent("TestEvent", "hello")
+    AssertStringEq(received, "hello")
 EndFunction
 
 ; #[test]

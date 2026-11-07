@@ -46,6 +46,131 @@ fn runs_arithmetic_loops_and_strings() {
     assert_eq!(half.to_string(), "1.500000");
 }
 
+const FORM_WITH_MOD_EVENTS: &str = "ScriptName Form Hidden\nFunction RegisterForModEvent(String eventName, String callbackName) Native\nFunction UnregisterForModEvent(String eventName) Native\nFunction UnregisterForAllModEvents() Native\nFunction SendModEvent(String eventName, String strArg = \"\", Float numArg = 0.0) Native\nFunction RegisterForSingleUpdate(Float afInterval) Native\n";
+const REF: &str = "ScriptName ObjectReference extends Form Hidden\nFunction Disable() Native\n";
+const ACTOR_REF: &str = "ScriptName Actor extends ObjectReference Hidden\n";
+const GAME: &str = "ScriptName Game Hidden\nActor Function GetPlayer() Global Native\n";
+const MOD_EVENT: &str = "ScriptName ModEvent Hidden\nInt Function Create(String eventName) Global Native\nBool Function Send(Int handle) Global Native\nFunction Release(Int handle) Global Native\nFunction PushInt(Int handle, Int value) Global Native\nFunction PushString(Int handle, String value) Global Native\n";
+
+/// A machine for a test script, with the scripts of the game it needs.
+fn game_vm(src: &str) -> Vm {
+    let mut ws = Workspace::new();
+    let scripts = [
+        ("Debug", DEBUG),
+        ("Form", FORM_WITH_MOD_EVENTS),
+        ("ObjectReference", REF),
+        ("Actor", ACTOR_REF),
+        ("Game", GAME),
+        ("ModEvent", MOD_EVENT),
+        ("Utility", UTILITY),
+        ("PapyrusAnalyzer", crate::PAPYRUS_ANALYZER_PSC),
+        ("Alias", "ScriptName Alias Hidden\n"),
+        ("ActiveMagicEffect", "ScriptName ActiveMagicEffect Hidden\n"),
+        ("T", src),
+    ];
+    for (name, text) in scripts {
+        ws.set_open(PathBuf::from(format!("/ws/{name}.psc")), Arc::from(text), 0);
+    }
+    Vm::new(Compiled(ws))
+}
+
+/// Runs `body` as a function of a new object of a script extending `Form`.
+fn run_body(members: &str, body: &str) -> Vm {
+    let src = format!(
+        "ScriptName T extends Form\nImport PapyrusAnalyzer\n{members}\nFunction Run()\n{body}\nEndFunction\n"
+    );
+    let mut vm = game_vm(&src);
+    let obj = vm.new_object("T").unwrap();
+    vm.call(obj, "Run", &[]).unwrap();
+    vm
+}
+
+#[test]
+fn every_function_of_papyrus_analyzer_has_examples() {
+    // Each declaration, then its documentation, up to the next declaration. (The
+    // tests compiling it check that it parses.)
+    let lines: Vec<&str> = crate::PAPYRUS_ANALYZER_PSC.lines().collect();
+    let declarations: Vec<usize> =
+        (0..lines.len()).filter(|&i| lines[i].trim_end().ends_with(" Native")).collect();
+    assert!(declarations.len() > 10);
+    for (n, &at) in declarations.iter().enumerate() {
+        let end = declarations.get(n + 1).copied().unwrap_or(lines.len());
+        let docs = lines[at + 1..end].join("\n");
+        assert!(docs.contains("# Examples\n\n```papyrus\n"), "{}: no `# Examples`", lines[at]);
+    }
+}
+
+#[test]
+fn tests_create_objects() {
+    let vm = run_body(
+        "",
+        "    Actor a = NewObject(\"Actor\") as Actor\n    AssertNotNone(a)\n    a.Disable()\n    AssertNotNone(Game.GetPlayer())\n    AssertTrue(Game.GetPlayer() == Game.GetPlayer())\n    AssertTrue(a != Game.GetPlayer())",
+    );
+    assert!(vm.errors.is_empty(), "{:?}", vm.errors);
+
+    // Its OnInit runs.
+    let src = "ScriptName T extends Form\nImport PapyrusAnalyzer\nInt Property Started Auto\nEvent OnInit()\n    Started += 1\nEndEvent\nFunction Run()\n    T other = NewObject(\"T\") as T\n    AssertIntEq(other.Started, 1)\nEndFunction\n";
+    let mut vm = game_vm(src);
+    let obj = vm.new_object("T").unwrap();
+    vm.call(obj, "Run", &[]).unwrap();
+    assert!(vm.errors.is_empty(), "{:?}", vm.errors);
+
+    // No such script: None and a failure.
+    let vm = run_body("", "    AssertNone(NewObject(\"Nope\"))");
+    assert_eq!(vm.errors.len(), 1, "{:?}", vm.errors);
+    assert!(vm.errors[0].contains("Nope"), "{:?}", vm.errors);
+}
+
+#[test]
+fn tests_check_the_native_calls() {
+    let body = "    Actor a = NewObject(\"Actor\") as Actor\n    Actor b = NewObject(\"Actor\") as Actor\n    a.Disable()\n    a.Disable()\n    AssertIntEq(CallCount(\"Disable\"), 2)\n    AssertIntEq(CallCount(\"ObjectReference.Disable\"), 2)\n    AssertIntEq(CallCount(\"actor.disable\"), 2)\n    AssertIntEq(CallCount(\"Form.Disable\"), 0)\n    AssertCalled(\"Disable\")\n    AssertCalled(\"ObjectReference.Disable\", 2)\n    AssertNotCalled(\"Delete\")\n    AssertCalledOn(a, \"Disable\", 2)\n    AssertCalledOn(b, \"Disable\", 0)";
+    let vm = run_body("", body);
+    assert!(vm.errors.is_empty(), "{:?}", vm.errors);
+
+    let vm = run_body(
+        "",
+        "    Actor a = NewObject(\"Actor\") as Actor\n    a.Disable()\n    AssertCalled(\"Disable\", 2, \"twice\")\n    AssertNotCalled(\"Disable\")\n    AssertCalled(\"Delete\")\n    AssertCalledOn(None, \"Disable\")",
+    );
+    assert_eq!(
+        vm.errors,
+        [
+            "assertion failed: expected Disable to be called 2 times, called 1 times: twice",
+            "assertion failed: expected Disable to be called 0 times, called 1 times",
+            "assertion failed: expected Delete to be called at least once, called 0 times",
+            "assertion failed: Disable called on None",
+        ]
+    );
+}
+
+#[test]
+fn mod_events_call_their_callbacks() {
+    let members = "String got\nFloat num\nForm sender\nInt calls\nEvent OnMine(String asName, String asArg, Float afNum, Form akSender)\n    got = asName + \"/\" + asArg\n    num = afNum\n    sender = akSender\n    calls += 1\nEndEvent\nEvent OnCustom(Int aiValue, String asText)\n    got = asText + aiValue\n    calls += 1\nEndEvent";
+    let vm = run_body(
+        members,
+        "    RegisterForModEvent(\"Mine\", \"OnMine\")\n    SendModEvent(\"Other\")\n    AssertIntEq(calls, 0)\n    SendModEvent(\"MINE\", \"text\", 2.5)\n    AssertIntEq(calls, 1)\n    AssertStringEq(got, \"MINE/text\")\n    AssertFloatEq(num, 2.5)\n    AssertTrue(sender == Self)\n    UnregisterForModEvent(\"Mine\")\n    SendModEvent(\"Mine\")\n    AssertIntEq(calls, 1)\n    RegisterForModEvent(\"Custom\", \"OnCustom\")\n    Int handle = ModEvent.Create(\"Custom\")\n    ModEvent.PushInt(handle, 7)\n    ModEvent.PushString(handle, \"n\")\n    AssertTrue(ModEvent.Send(handle))\n    AssertIntEq(calls, 2)\n    AssertStringEq(got, \"n7\")\n    AssertFalse(ModEvent.Send(handle))\n    Int released = ModEvent.Create(\"Custom\")\n    ModEvent.Release(released)\n    AssertFalse(ModEvent.Send(released))\n    AssertFalse(ModEvent.Send(0))\n    AssertIntEq(calls, 2)\n    UnregisterForAllModEvents()\n    SendModEvent(\"Custom\")\n    AssertIntEq(calls, 2)",
+    );
+    assert!(vm.errors.is_empty(), "{:?}", vm.errors);
+}
+
+#[test]
+fn a_new_test_forgets_the_previous_one() {
+    let src = "ScriptName T extends Form\nImport PapyrusAnalyzer\nInt updates\nFunction First()\n    RegisterForSingleUpdate(1.0)\n    RegisterForModEvent(\"E\", \"OnE\")\n    Debug.Trace(\"first\")\nEndFunction\nFunction Second()\n    Utility.Wait(5.0)\n    SendModEvent(\"E\")\n    AssertNotCalled(\"RegisterForSingleUpdate\")\nEndFunction\nEvent OnUpdate()\n    Fail(\"the update of the previous test\")\nEndEvent\nEvent OnE()\n    Fail(\"the event of the previous test\")\nEndEvent\n";
+    let mut vm = game_vm(src);
+    let first = vm.new_object("T").unwrap();
+    vm.call(first, "First", &[]).unwrap();
+    assert_eq!(vm.output, ["first"]);
+    let player = vm.call_static("Game", "GetPlayer", &[]).unwrap();
+
+    vm.begin_test();
+    assert!(vm.output.is_empty());
+    let second = vm.new_object("T").unwrap();
+    vm.call(second, "Second", &[]).unwrap();
+    assert!(vm.errors.is_empty(), "{:?}", vm.errors);
+    // Another player too.
+    let other = vm.call_static("Game", "GetPlayer", &[]).unwrap();
+    assert!(!player.loose_eq(&other));
+}
+
 #[test]
 fn dispatches_through_parents_states_and_properties() {
     let base = "ScriptName Base extends Form\nString Function Greet()\n    Return \"hello\"\nEndFunction\n";
@@ -91,7 +216,12 @@ fn natives_none_and_failed_casts() {
 #[test]
 fn asserts_record_failures() {
     let src = "ScriptName T\nImport PapyrusAnalyzer\nFunction Check(Int x) Global\n    PapyrusAnalyzer.AssertIntEq(x, 3, \"three\")\n    AssertFloatEq(x / 2.0, 1.5)\n    AssertTrue(x > 0)\nEndFunction\n";
-    let mut vm = vm(&[("T", src), ("PapyrusAnalyzer", crate::PAPYRUS_ANALYZER_PSC)]);
+    let mut vm = vm(&[
+        ("T", src),
+        ("PapyrusAnalyzer", crate::PAPYRUS_ANALYZER_PSC),
+        ("Alias", "ScriptName Alias Hidden\n"),
+        ("ActiveMagicEffect", "ScriptName ActiveMagicEffect Hidden\n"),
+    ]);
     vm.call_static("T", "Check", &[Value::Int(3)]).unwrap();
     assert!(vm.errors.is_empty(), "{:?}", vm.errors);
     vm.call_static("T", "Check", &[Value::Int(-1)]).unwrap();
