@@ -507,7 +507,8 @@ impl<'s, 'a> Ctx<'s, 'a> {
             .sema
             .ws
             .all_scripts()
-            .filter(|&(_, f)| self.sema.ws.is_visible(f, self.sema.file))
+            // Like names: only the scripts of the project, for its scripts.
+            .filter(|&(name, _)| self.sema.ws.script_near(name, self.sema.file).is_some())
             .filter(|(name, _)| {
                 first.is_none_or(|c| {
                     name.as_str().chars().next().map(|f| f.to_ascii_lowercase()) == Some(c)

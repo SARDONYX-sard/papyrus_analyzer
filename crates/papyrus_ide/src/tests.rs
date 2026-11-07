@@ -982,6 +982,52 @@ EndFunction
 }
 
 #[test]
+fn one_project_sees_its_directories_only() {
+    let mut ws = Workspace::new();
+    let mut add = |path: &str, text: &str, origin| {
+        ws.set_disk_index(PathBuf::from(path), index_text(text), origin);
+    };
+    add("/ws/src/Own.psc", "ScriptName Own\n", Origin::Workspace);
+    add("/game/Actor.psc", "ScriptName Actor\n", Origin::Import(0));
+    add("/ws/tests/corpus/Actor.psc", "ScriptName Actor\n", Origin::Workspace);
+    add("/ws/tests/corpus/Elsewhere.psc", "ScriptName Elsewhere\n", Origin::Workspace);
+    ws.set_scopes(&[Scope {
+        sources: vec![PathBuf::from("/ws/src")],
+        visible: vec![PathBuf::from("/ws/src"), PathBuf::from("/game")],
+    }]);
+    let file = ws.set_open(PathBuf::from("/ws/src/T.psc"), Arc::from("ScriptName T\nImport "), 0);
+    let offset = TextSize::of("ScriptName T\nImport ");
+    let labels: Vec<String> =
+        completions(&ws, file, offset).items.into_iter().map(|i| i.label).collect();
+    assert!(labels.iter().any(|l| l == "Own"), "{labels:?}");
+    assert!(labels.iter().any(|l| l == "Actor"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "Elsewhere"), "{labels:?}");
+    // The script of the same name is the one of the imports.
+    let actor = ws.script_near(Name::new("Actor"), file).unwrap();
+    assert_eq!(ws.file(actor).path, PathBuf::from("/game/Actor.psc"));
+}
+
+#[test]
+fn tests_of_a_project_see_the_built_in_script_in_its_sources() {
+    let mut ws = Workspace::new();
+    ws.set_disk_index(
+        PathBuf::from("/builtin/PapyrusAnalyzer.psc"),
+        index_text("ScriptName PapyrusAnalyzer\n"),
+        Origin::Builtin,
+    );
+    ws.set_scopes(&[Scope {
+        sources: vec![PathBuf::from("/ws")],
+        visible: vec![PathBuf::from("/ws")],
+    }]);
+    ws.set_test_dirs(&[PathBuf::from("/ws/tests")]);
+    let name = Name::new("PapyrusAnalyzer");
+    let test = ws.set_open(PathBuf::from("/ws/tests/T.psc"), Arc::from("ScriptName T\n"), 0);
+    assert!(ws.script_near(name, test).is_some());
+    let source = ws.set_open(PathBuf::from("/ws/S.psc"), Arc::from("ScriptName S\n"), 0);
+    assert!(ws.script_near(name, source).is_none());
+}
+
+#[test]
 fn references_of_a_member_in_scripts_that_can_name_it() {
     let base = "ScriptName Base\nEvent $0OnThing()\nEndEvent\n";
     let (mut ws, file, offset) = workspace(&[("Base.psc", base)]);
@@ -992,12 +1038,12 @@ fn references_of_a_member_in_scripts_that_can_name_it() {
     add("Deep", "ScriptName Deep extends Plain\nFunction F()\n    OnThing()\nEndFunction\n");
     add("Dotted", "ScriptName Dotted\nFunction F(Base o)\n    o.OnThing()\nEndFunction\n");
     add("Spaced", "ScriptName Spaced\nFunction F(Base o)\n    o . OnThing()\nEndFunction\n");
-    add(
-        "Split",
-        "ScriptName Split\nFunction F(Base o)\n    o.\\\n    OnThing()\nEndFunction\n",
-    );
+    add("Split", "ScriptName Split\nFunction F(Base o)\n    o.\\\n    OnThing()\nEndFunction\n");
     // The same name, of another script.
-    add("Other", "ScriptName Other\nEvent OnThing()\nEndEvent\nFunction F()\n    OnThing()\nEndFunction\n");
+    add(
+        "Other",
+        "ScriptName Other\nEvent OnThing()\nEndEvent\nFunction F()\n    OnThing()\nEndFunction\n",
+    );
 
     let found = references(&ws, file, offset, false);
     let mut names: Vec<&str> = found

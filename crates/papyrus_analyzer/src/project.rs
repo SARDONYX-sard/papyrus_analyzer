@@ -78,13 +78,10 @@ impl Server {
         dirs
     }
 
-    /// The scripts each project of a `[workspace]` sees, like the compiler:
-    /// its sources, its dependencies, its imports and the configured import
-    /// directories. Empty for one project, which sees every script.
+    /// The scripts each project sees, like the compiler: its sources, its
+    /// dependencies, its imports and the configured import directories. Empty
+    /// without project (limited mode), where scripts see every script.
     pub(crate) fn scopes(&self) -> Vec<papyrus_ide::Scope> {
-        if self.members.len() < 2 {
-            return Vec::new();
-        }
         let configured: Vec<PathBuf> =
             self.config.import_directories.iter().filter_map(|d| self.expand_setting(d)).collect();
         self.members

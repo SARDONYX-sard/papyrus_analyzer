@@ -351,8 +351,10 @@ impl Workspace {
         // A file of a scope sees only the scripts visible from its scope.
         let scope = near.and_then(|n| self.file(n).scope);
         let visible = |id: FileId| {
-            scope.is_none_or(|s| self.file(id).visible_in & 1 << s != 0)
-                && near.is_none_or(|n| self.is_visible(id, n))
+            // Built-in scripts are in no directory: `is_visible` tells.
+            let in_scope = self.file(id).origin == Origin::Builtin
+                || scope.is_none_or(|s| self.file(id).visible_in & 1 << s != 0);
+            in_scope && near.is_none_or(|n| self.is_visible(id, n))
         };
         if let [only] = ids.as_slice() {
             return Some(*only).filter(|&id| visible(id));

@@ -506,6 +506,12 @@ impl Server {
             && let Some(file) = self.ws.file_id(path)
         {
             self.ws.close(file);
+            // A script of no directory of the project was known for being open.
+            if !self.index_dirs().iter().any(|(d, _)| path.starts_with(d))
+                && self.ws.file_id(path) == Some(file)
+            {
+                self.ws.remove(file);
+            }
             // A source of the project keeps its diagnostics, of the disk text
             // (closing forgets files deleted from the disk).
             if self.ws.file_id(path) == Some(file)
@@ -534,6 +540,7 @@ impl Server {
         // checked again.
         let mut changed: Vec<String> = Vec::new();
         let build_dirs = self.build_output_dirs();
+        let indexed_dirs = self.index_dirs();
         for change in params.changes {
             let Some(path) = conv::uri_to_path(&change.uri) else { continue };
             // Compiled and decompiled scripts are not sources.
@@ -555,7 +562,11 @@ impl Server {
             if !is_script(&path) {
                 continue;
             }
+            // Scripts of no directory of the project stay unknown.
             let existing = self.ws.file_id(&path);
+            if existing.is_none() && !indexed_dirs.iter().any(|(d, _)| path.starts_with(d)) {
+                continue;
+            }
             if existing.is_some_and(|f| self.ws.file(f).open.is_some()) {
                 // The editor contents are authoritative.
                 continue;
@@ -704,16 +715,9 @@ impl Server {
         self.generation += 1;
         self.indexing = true;
         let generation = self.generation;
-        let mut dirs: Vec<(PathBuf, Origin)> =
-            self.roots.iter().map(|r| (r.clone(), Origin::Workspace)).collect();
-        dirs.extend(
-            self.import_dirs()
-                .into_iter()
-                .enumerate()
-                // Directories inside a workspace folder are already scanned.
-                .filter(|(_, d)| !self.roots.iter().any(|r| d.starts_with(r)))
-                .map(|(i, d)| (d, Origin::Import(i as u16))),
-        );
+        let dirs = self.index_dirs();
+        // Next to the manifests too, outside of the sources.
+        let flag_dirs: Vec<PathBuf> = self.members.iter().map(|m| m.root.clone()).collect();
         for (dir, _) in &dirs {
             if !dir.is_dir() {
                 log::warn!("not a directory: {}", dir.display());
@@ -743,11 +747,39 @@ impl Server {
         let tx = self.index_tx.clone();
         let spawned = std::thread::Builder::new()
             .name("papyrus-indexer".to_owned())
-            .spawn(move || index_workspace(generation, &dirs, &skipped, &tx));
+            .spawn(move || index_workspace(generation, &dirs, &flag_dirs, &skipped, &tx));
         if let Err(err) = spawned {
             log::error!("cannot spawn the indexer: {err}");
             self.indexing = false;
         }
+    }
+
+    /// The directories whose scripts are known. With a manifest, what it names:
+    /// sources, tests, dependencies and imports, as for the compiler; other
+    /// scripts below the workspace folders are not of the project. Without
+    /// (limited mode), the workspace folders.
+    fn index_dirs(&self) -> Vec<(PathBuf, Origin)> {
+        let mut dirs: Vec<(PathBuf, Origin)> = Vec::new();
+        let own: Vec<PathBuf> = if self.members.is_empty() {
+            self.roots.clone()
+        } else {
+            let sources = self.members.iter().flat_map(|m| m.sources.iter().chain(&m.test_sources));
+            sources.cloned().collect()
+        };
+        for dir in own {
+            if !dirs.iter().any(|(d, _)| dir.starts_with(d)) {
+                dirs.retain(|(d, _)| !d.starts_with(&dir));
+                dirs.push((dir, Origin::Workspace));
+            }
+        }
+        for dir in self.import_dirs() {
+            // Directories inside another one are already scanned.
+            if !dirs.iter().any(|(d, _)| dir.starts_with(d)) {
+                let origin = self.origin_of(&dir);
+                dirs.push((dir, origin));
+            }
+        }
+        dirs
     }
 
     fn on_index_event(&mut self, event: IndexEvent) {
@@ -1111,10 +1143,12 @@ fn apply_changes(text: &mut String, changes: Vec<lsp_types::TextDocumentContentC
     }
 }
 
-/// Finds and indexes every script below `dirs`, in parallel.
+/// Finds and indexes every script below `dirs`, in parallel; flags files are
+/// looked for below `flag_dirs` too.
 fn index_workspace(
     generation: u64,
     dirs: &[(PathBuf, Origin)],
+    flag_dirs: &[PathBuf],
     skipped: &[PathBuf],
     tx: &Sender<IndexEvent>,
 ) {
@@ -1123,6 +1157,9 @@ fn index_workspace(
     let mut flag_files = Vec::new();
     for (dir, origin) in dirs {
         collect_scripts(dir, *origin, skipped, &mut paths, &mut flag_files);
+    }
+    for dir in flag_dirs.iter().filter(|f| !dirs.iter().any(|(d, _)| f.starts_with(d))) {
+        collect_scripts(dir, Origin::Workspace, skipped, &mut Vec::new(), &mut flag_files);
     }
     let total = paths.len();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
