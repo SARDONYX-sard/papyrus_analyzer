@@ -217,7 +217,7 @@ fn def_class(sema: &Sema<'_>, def: Def) -> (TokenType, u32) {
         }
         Def::Local { .. } => (TokenType::Variable, 0),
         Def::Script { .. } => (TokenType::Class, 0),
-        Def::Flag(_) => (TokenType::Decorator, 0),
+        Def::Flag(..) => (TokenType::Decorator, 0),
         Def::LanguageFlag(_) => (TokenType::Keyword, 0),
         Def::Builtin(b, _) => {
             let ty = if b.is_callable() { TokenType::Function } else { TokenType::Property };

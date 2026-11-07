@@ -1,8 +1,10 @@
 //! `papyrus_analyzer lint`: checks scripts like `cargo clippy`, and with
 //! `--fix` applies the automatic fixes like `fmt` rewrites files.
 //!
-//! The levels come from `[lints]` of the `papyrus.toml` of the current
-//! directory (or its ancestors), then from `-A`, `-W` and `-D`, which win.
+//! The levels come from `[lints]` of the project of each script, as in the
+//! editor: of the `papyrus.toml` of the current directory (or its ancestors), or
+//! of the members of its workspace. Scripts of no project have the defaults. `-A`,
+//! `-W` and `-D` win over them.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
@@ -34,8 +36,9 @@ options:
                      into an error
   --list          list the lints, their group and level
 
-Levels come from [lints] of papyrus.toml, then from the flags. A lint wins
-over its group, which wins over `all`.
+Levels come from [lints] of the project of each script (the defaults for
+scripts of no project), then from the flags. A lint wins over its group, which
+wins over `all`.
 
 exit code: 1 when an error (a denied lint) is reported, else 0.
 
@@ -68,6 +71,8 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let mut vcs = VcsOptions::default();
     let mut list = false;
     let mut paths = Vec::new();
+    // `-A`, `-W` and `-D`, which win over the settings of every project.
+    let mut levels: Vec<(String, Level)> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let level = match arg.as_str() {
@@ -124,6 +129,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
                 eprintln!("{e}");
                 return 2;
             }
+            levels.push((name.clone(), level));
         }
     }
 
@@ -157,16 +163,34 @@ pub(crate) fn run(args: &[String]) -> i32 {
 
     // The scripts they use, for the lints that need types (`unchecked-cast`).
     let mut base = crate::fmt::workspace(&scripts);
+    // The projects, whose settings their scripts have, as in the editor. When they
+    // do not load (undefined variables), `[lints]` is read on its own.
+    let project = manifest.as_ref().and_then(|m| {
+        papyrus_project::load_workspace(m, &papyrus_project::Variables::for_command_line(&cwd)).ok()
+    });
     // The other scripts of the project, for what depends on the scripts
     // extending these ones: the states of `unknown-state`.
-    if let Some(m) = &manifest {
-        index_project(&mut base, m);
+    if let Some(project) = &project {
+        index_project(&mut base, project);
     }
+    let config_of = |path: &Path| match &project {
+        None => config.clone(),
+        Some(project) => {
+            let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+            let mut config =
+                project.member_for(&absolute).map(|m| m.lints.clone()).unwrap_or_default();
+            for (name, level) in &levels {
+                // Checked when reading the arguments.
+                let _ = config.set(name, *level);
+            }
+            config
+        }
+    };
     // Files are independent (lints look at one script): each gets its own
     // copy of the workspace, in parallel; reports keep the order of the files.
     use rayon::prelude::*;
     let reports: Vec<FileReport> =
-        scripts.par_iter().map(|p| lint_file(p, &config, fix, manual_fixes, &base)).collect();
+        scripts.par_iter().map(|p| lint_file(p, &config_of(p), fix, manual_fixes, &base)).collect();
     let (mut warnings, mut errors, mut fixed, mut fixed_files) = (0, 0, 0, 0);
     for report in reports {
         for line in &report.notes {
@@ -253,11 +277,8 @@ fn check_vcs(paths: &[PathBuf], options: VcsOptions) -> Result<(), String> {
     ))
 }
 
-/// Adds the sources of the projects of `manifest` to `ws`.
-fn index_project(ws: &mut Workspace, manifest: &Path) {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let vars = papyrus_project::Variables::for_command_line(&cwd);
-    let Ok(project) = papyrus_project::load_workspace(manifest, &vars) else { return };
+/// Adds the sources of the projects of `project` to `ws`.
+fn index_project(ws: &mut Workspace, project: &papyrus_project::ProjectWorkspace) {
     let mut scripts = Vec::new();
     for dir in project.members.iter().flat_map(|m| m.sources.iter().chain(&m.test_sources)) {
         collect(dir, &mut scripts);

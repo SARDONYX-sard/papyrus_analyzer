@@ -21,8 +21,8 @@ use crate::{
 pub enum NavFile {
     /// A script.
     Script(FileId),
-    /// The flags file, see [`Workspace::flags`].
-    Flags,
+    /// A flags file, see [`Workspace::flag_table`].
+    Flags(u16),
 }
 
 /// A location to navigate to.
@@ -187,12 +187,13 @@ fn same_event(ws: &Workspace, name: &str) -> impl Iterator<Item = ModEventSite> 
 /// All uses of the flag defined at `offset` in the flags file.
 pub fn flag_references(
     ws: &Workspace,
+    table: u16,
     offset: TextSize,
     include_declaration: bool,
 ) -> Vec<(NavFile, TextRange)> {
-    let flags = ws.flags();
+    let flags = ws.flag_table(table);
     let Some(i) = flags.def_at(offset) else { return Vec::new() };
-    find_references(ws, Def::Flag(i as u32), flags.defs[i].name, include_declaration)
+    find_references(ws, Def::Flag(table, i as u32), flags.defs[i].name, include_declaration)
 }
 
 pub(crate) fn find_references(
@@ -259,11 +260,11 @@ pub(crate) fn find_references(
             .collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
     });
-    if let Def::Flag(i) = def
+    if let Def::Flag(table, i) = def
         && include_declaration
-        && ws.flags().path.is_some()
+        && ws.flag_table(table).path.is_some()
     {
-        out.push((NavFile::Flags, ws.flags().defs[i as usize].name_range));
+        out.push((NavFile::Flags(table), ws.flag_table(table).defs[i as usize].name_range));
     }
     out.sort_by_key(|&(f, r)| (f, r.start()));
     out.dedup();
@@ -321,7 +322,7 @@ fn is_declaration(ws: &Workspace, def: Def, file: FileId, range: TextRange) -> b
             f == file && ws.file(f).index.members[index as usize].name_range == range
         }
         Def::Script { file: f } => f == file && ws.file(f).index.name_range == Some(range),
-        Def::Param { .. } | Def::Builtin(..) | Def::Flag(_) | Def::LanguageFlag(_) => false,
+        Def::Param { .. } | Def::Builtin(..) | Def::Flag(..) | Def::LanguageFlag(_) => false,
     }
 }
 
@@ -332,7 +333,7 @@ pub(crate) fn def_name(sema: &Sema<'_>, def: Def) -> Option<Name> {
         Def::Param { file, member, param } => sema.member(file, member).params[param as usize].name,
         Def::Script { file } => sema.ws.file(file).index.name?,
         Def::Builtin(b, _) => Name::new(b.name()),
-        Def::Flag(i) => sema.ws.flags().defs.get(i as usize)?.name,
+        Def::Flag(table, i) => sema.ws.flag_table(table).defs.get(i as usize)?.name,
         Def::LanguageFlag(kind) => Name::new(super::language_flag_docs(kind).0),
     })
 }

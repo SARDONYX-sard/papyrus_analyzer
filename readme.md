@@ -71,6 +71,8 @@ Optional. The two modes:
 | Output      | `[build] output` (+ `/decompile`) | `build/papyrus/{compile,decompile}`                  |
 | Diagnostics | every source script               | open scripts only                                    |
 
+Each workspace folder has its own mode, and each `papyrus.toml` its own projects. Scripts of a folder with `papyrus.toml`, outside of `[build] sources` and `[test] sources`, are not of the project: known only while open, with the default settings.
+
 ```toml
 "$schema" = "https://raw.githubusercontent.com/SARDONYX-sard/papyrus_analyzer/refs/tags/0.2.2/schemas/papyrus.schema.json"
 
@@ -134,15 +136,23 @@ style = "allow"
 
 ```toml
 # my-mods/Requiem/papyrus.toml
+[var]
+SKYRIM_DIR.workspace = true
+
+[build]
+imports.workspace = true
+
 [lints]
 workspace = true
 ```
 
-| Workspace table                            | Member                                                          |
-| ------------------------------------------ | --------------------------------------------------------------- |
-| `[workspace.var]` · `compiler` · `build`   | inherited; own values win (imports appended)                    |
-| `[workspace.lints]` · `[workspace.format]` | only with `workspace = true`, alone in the table: like in Cargo |
-| `members` · `exclude`                      | may use variables                                               |
+Like in `Cargo.toml`, nothing applies by itself: a member asks for what it wants.
+
+| Workspace table                            | Member                                                 |
+| ------------------------------------------ | ------------------------------------------------------ |
+| `[workspace.var]` · `compiler` · `build`   | `key.workspace = true`, for each value                 |
+| `[workspace.lints]` · `[workspace.format]` | `workspace = true`, alone in the table                 |
+| `members` · `exclude`                      | may use `[var]` and `[workspace.var]` of the same file |
 
 - A member sees its sources + `[dependencies]` (transitively) + imports, nothing else — like the compiler:
   - `MCM` in Requiem → `MCMHelper/…/MCM.psc` ✓

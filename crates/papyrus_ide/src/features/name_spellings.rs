@@ -111,7 +111,9 @@ fn def_spelling(sema: &Sema<'_>, def: Def) -> Option<(NameKind, String)> {
             let kind = if b.is_callable() { NameKind::Function } else { NameKind::Property };
             (kind, b.name().to_owned())
         }
-        Def::Flag(i) => (NameKind::Flag, sema.ws.flags().defs.get(i as usize)?.name.to_string()),
+        Def::Flag(table, i) => {
+            (NameKind::Flag, sema.ws.flag_table(table).defs.get(i as usize)?.name.to_string())
+        }
         Def::LanguageFlag(_) => return None,
     })
 }

@@ -128,7 +128,7 @@ fn name_spellings_follow_definitions() {
 fn script_of(file: NavFile) -> FileId {
     match file {
         NavFile::Script(f) => f,
-        NavFile::Flags => panic!("expected a script"),
+        NavFile::Flags(_) => panic!("expected a script"),
     }
 }
 
@@ -903,9 +903,14 @@ fn scopes_limit_visible_scripts() {
         Scope {
             sources: vec!["/ws/App".into()],
             visible: vec!["/ws/App".into(), "/ws/Helper".into()],
+            flags: None,
         },
-        Scope { sources: vec!["/ws/Other".into()], visible: vec!["/ws/Other".into()] },
-        Scope { sources: vec!["/ws/Helper".into()], visible: vec!["/ws/Helper".into()] },
+        Scope { sources: vec!["/ws/Other".into()], visible: vec!["/ws/Other".into()], flags: None },
+        Scope {
+            sources: vec!["/ws/Helper".into()],
+            visible: vec!["/ws/Helper".into()],
+            flags: None,
+        },
     ]);
     let util = papyrus_intern::Name::new("Util");
     assert_eq!(ws.script_near(papyrus_intern::Name::new("MCM"), app), Some(mcm));
@@ -996,6 +1001,7 @@ fn one_project_sees_its_directories_only() {
     ws.set_scopes(&[Scope {
         sources: vec![PathBuf::from("/ws/src")],
         visible: vec![PathBuf::from("/ws/src"), PathBuf::from("/game")],
+        flags: None,
     }]);
     let file = ws.set_open(PathBuf::from("/ws/src/T.psc"), Arc::from("ScriptName T\nImport "), 0);
     let offset = TextSize::of("ScriptName T\nImport ");
@@ -1020,6 +1026,7 @@ fn tests_of_a_project_see_the_built_in_script_in_its_sources() {
     ws.set_scopes(&[Scope {
         sources: vec![PathBuf::from("/ws")],
         visible: vec![PathBuf::from("/ws")],
+        flags: None,
     }]);
     ws.set_test_dirs(&[PathBuf::from("/ws/tests")]);
     let name = Name::new("PapyrusAnalyzer");
@@ -1027,6 +1034,81 @@ fn tests_of_a_project_see_the_built_in_script_in_its_sources() {
     assert!(ws.script_near(name, test).is_some());
     let source = ws.set_open(PathBuf::from("/ws/S.psc"), Arc::from("ScriptName S\n"), 0);
     assert!(ws.script_near(name, source).is_none());
+}
+
+#[test]
+fn each_project_has_its_flags_file() {
+    let dir = std::env::temp_dir().join(format!("papyrus-flag-tables-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let flag_file = |name: &str, flag: &str, bit: u32| {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("Flag {flag} {bit} {{ Script }}\n")).unwrap();
+        path
+    };
+    let (first, second) =
+        (flag_file("First.flg", "OnlyFirst", 1), flag_file("Second.flg", "OnlySecond", 2));
+
+    let mut ws = Workspace::new();
+    let scope = |name: &str, flags: Option<PathBuf>| Scope {
+        sources: vec![PathBuf::from(format!("/ws/{name}"))],
+        visible: vec![PathBuf::from(format!("/ws/{name}"))],
+        flags,
+    };
+    ws.set_scopes(&[
+        scope("A", Some(first.clone())),
+        scope("B", Some(second.clone())),
+        scope("Shared", Some(first.clone())),
+        scope("None", None),
+    ]);
+    let open = |ws: &mut Workspace, path: &str, flag: &str| {
+        let text = format!("ScriptName T {flag}\n");
+        ws.set_open(PathBuf::from(path), Arc::from(text.as_str()), 0)
+    };
+    let a = open(&mut ws, "/ws/A/T.psc", "OnlyFirst");
+    let b = open(&mut ws, "/ws/B/T.psc", "OnlySecond");
+    let shared = open(&mut ws, "/ws/Shared/T.psc", "OnlyFirst");
+    let none = open(&mut ws, "/ws/None/T.psc", "Hidden");
+    let outside = open(&mut ws, "/elsewhere/T.psc", "Hidden");
+
+    assert_eq!(ws.flags_of(a).path.as_deref(), Some(first.as_path()));
+    assert_eq!(ws.flags_of(b).path.as_deref(), Some(second.as_path()));
+    assert_eq!(ws.flag_table_of(shared), ws.flag_table_of(a));
+    // Without flags file: the default ones, not those of another project.
+    assert_eq!(ws.flags_of(none).path, None);
+    assert_eq!(ws.flags_of(outside).path, None);
+
+    // Each script resolves the flags of its project, and goes to its file.
+    let at = |ws: &Workspace, file, flag: &str| {
+        let text = ws.text(file).unwrap();
+        TextSize::new(text.find(flag).unwrap() as u32)
+    };
+    let target = |ws: &Workspace, file, flag: &str| {
+        let found = goto_definition(ws, file, at(ws, file, flag));
+        assert_eq!(found.len(), 1, "{flag}");
+        found[0].file
+    };
+    assert_eq!(target(&ws, a, "OnlyFirst"), NavFile::Flags(ws.flag_table_of(a)));
+    assert_eq!(target(&ws, b, "OnlySecond"), NavFile::Flags(ws.flag_table_of(b)));
+    assert_ne!(ws.flag_table_of(a), ws.flag_table_of(b));
+
+    // References stay among the scripts of the same flags file.
+    let references_of =
+        |ws: &Workspace, file, flag: &str| references(ws, file, at(ws, file, flag), false).len();
+    assert_eq!(references_of(&ws, a, "OnlyFirst"), 2);
+    assert_eq!(references_of(&ws, b, "OnlySecond"), 1);
+
+    // The text of the editor goes to its table, and comes back when closed.
+    ws.set_flags_open(second.clone(), Arc::from("Flag Edited 3 { Script }\n"));
+    assert!(ws.flags_of(b).get("Edited").is_some());
+    assert!(ws.flags_of(a).get("Edited").is_none());
+    assert!(ws.is_flags_file(&second));
+    let scopes_again = [scope("A", Some(first.clone())), scope("B", Some(second.clone()))];
+    ws.set_scopes(&scopes_again);
+    assert!(ws.flags_of(b).get("Edited").is_some(), "still open");
+    ws.reload_flags(&second);
+    assert!(ws.flags_of(b).get("OnlySecond").is_some());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -1189,16 +1271,16 @@ fn flag_hover_goto_and_references() {
     );
     let targets = goto_definition(&ws, file, offset);
     assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].file, NavFile::Flags);
+    assert_eq!(targets[0].file, NavFile::Flags(0));
     assert_eq!(&FLAGS[targets[0].focus_range], "Hidden");
 
     let refs = references(&ws, file, offset, true);
     assert_eq!(refs.len(), 4, "{refs:?}");
-    let from_flg = flag_references(&ws, targets[0].focus_range.start(), false);
+    let from_flg = flag_references(&ws, 0, targets[0].focus_range.start(), false);
     assert_eq!(from_flg.len(), 3);
 
-    assert!(flag_file_hover(&ws, targets[0].focus_range.start()).is_some());
-    assert_eq!(flag_file_symbols(&ws).len(), 3);
+    assert!(flag_file_hover(ws.flags(), targets[0].focus_range.start()).is_some());
+    assert_eq!(flag_file_symbols(ws.flags()).len(), 3);
 }
 
 #[test]
@@ -1224,17 +1306,20 @@ fn keyword_hover_has_examples() {
 
     let (ws, _, _) = with_flags(&[("Test.psc", "ScriptName Test$0\n")]);
     let at = |needle: &str| TextSize::new(FLAGS.find(needle).unwrap() as u32 + 1);
-    assert!(flag_file_hover(&ws, at("Flag Hidden")).unwrap().markdown.contains("bit index"));
+    assert!(flag_file_hover(ws.flags(), at("Flag Hidden")).unwrap().markdown.contains("bit index"));
     assert!(
-        flag_file_hover(&ws, at("Property }")).unwrap().markdown.contains("property declarations")
+        flag_file_hover(ws.flags(), at("Property }"))
+            .unwrap()
+            .markdown
+            .contains("property declarations")
     );
     assert!(
-        flag_file_hover(&ws, at("Hidden 0"))
+        flag_file_hover(ws.flags(), at("Hidden 0"))
             .unwrap()
             .markdown
             .starts_with("```papyrus\nFlag Hidden 0")
     );
-    assert!(flag_file_hover(&ws, at("Hides")).is_none(), "comments have no hover");
+    assert!(flag_file_hover(ws.flags(), at("Hides")).is_none(), "comments have no hover");
 }
 
 #[test]
@@ -1242,12 +1327,13 @@ fn flag_file_completion() {
     let (ws, _, _) = with_flags(&[("Test.psc", "ScriptName Test$0\n")]);
     let at = |needle: &str| TextSize::new((FLAGS.find(needle).unwrap() + needle.len()) as u32);
     let labels = |offset| -> Vec<String> {
-        flag_file_completions(&ws, offset).items.into_iter().map(|i| i.label).collect()
+        flag_file_completions(ws.flags(), offset).items.into_iter().map(|i| i.label).collect()
     };
     // Inside `{ Script Property }` of Hidden: only the missing targets.
     assert_eq!(labels(at("{ Script ")), ["Variable", "Function"]);
     assert_eq!(labels(TextSize::of(FLAGS)), ["Flag", "Flag"]);
-    let snippet = flag_file_completions(&ws, TextSize::of(FLAGS)).items[0].snippet.clone().unwrap();
+    let snippet =
+        flag_file_completions(ws.flags(), TextSize::of(FLAGS)).items[0].snippet.clone().unwrap();
     assert!(snippet.contains("${2:2}"), "next free index: {snippet}");
     assert!(labels(at("// Hid")).is_empty());
 }

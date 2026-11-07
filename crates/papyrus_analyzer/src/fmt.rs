@@ -173,16 +173,16 @@ pub(crate) fn workspace_with_imports(scripts: &[PathBuf]) -> (Workspace, Vec<Pat
     let vars = papyrus_project::Variables::for_command_line(&cwd);
     let manifest =
         cwd.ancestors().map(|d| d.join(papyrus_project::MANIFEST_NAME)).find(|p| p.is_file());
-    let (imports, flags) = match &manifest {
+    let (imports, members) = match &manifest {
         Some(m) => match papyrus_project::load_workspace(m, &vars) {
             Ok(ws) => (
                 ws.members.iter().flat_map(papyrus_project::Project::import_dirs).collect(),
-                ws.members.iter().find_map(|p| p.flags.clone()),
+                ws.members,
             ),
             Err(errors) => {
                 // Formatting still works, names of other scripts are kept.
                 eprintln!("{}: {}", m.display(), errors[0].message);
-                (Vec::new(), None)
+                (Vec::new(), Vec::new())
             }
         },
         None => {
@@ -190,16 +190,13 @@ pub(crate) fn workspace_with_imports(scripts: &[PathBuf]) -> (Workspace, Vec<Pat
                 .lookup(papyrus_project::SKYRIM_DIR)
                 .map(|(dir, _)| PathBuf::from(dir))
                 .or_else(papyrus_project::detect_skyrim_dir);
-            (skyrim.map(|d| papyrus_project::game_script_dirs(&d)).unwrap_or_default(), None)
+            (skyrim.map(|d| papyrus_project::game_script_dirs(&d)).unwrap_or_default(), Vec::new())
         }
     };
     let mut ws = Workspace::new();
     papyrus_compiler::loader::load(&mut ws, scripts, &imports);
-    if let Some(path) = flags
-        && let Ok(text) = std::fs::read_to_string(&path)
-    {
-        ws.set_flags_file(path, Arc::from(text));
-    }
+    // Each script with what its project sees, and its flags.
+    ws.set_scopes(&crate::project::project_scopes(&members, &[]));
     (ws, imports)
 }
 

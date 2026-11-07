@@ -94,6 +94,81 @@ impl fmt::Display for ManifestError {
     }
 }
 
+/// A value of a manifest, or `key.workspace = true` to take the one of the
+/// workspace, like in `Cargo.toml`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Inheritable<T> {
+    /// Written in the manifest.
+    Value(T),
+    /// `key.workspace = true`
+    Workspace,
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Inheritable<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::{
+            Error, IntoDeserializer, MapAccess, SeqAccess, Visitor,
+            value::{BoolDeserializer, SeqAccessDeserializer, StrDeserializer},
+        };
+
+        struct Inherit<T>(std::marker::PhantomData<T>);
+
+        impl<'de, T: Deserialize<'de>> Visitor<'de> for Inherit<T> {
+            type Value = Inheritable<T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a value, or `workspace = true`")
+            }
+
+            fn visit_str<E: Error>(self, v: &str) -> Result<Self::Value, E> {
+                let value: StrDeserializer<'_, E> = v.into_deserializer();
+                T::deserialize(value).map(Inheritable::Value)
+            }
+
+            fn visit_bool<E: Error>(self, v: bool) -> Result<Self::Value, E> {
+                let value: BoolDeserializer<E> = v.into_deserializer();
+                T::deserialize(value).map(Inheritable::Value)
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                T::deserialize(SeqAccessDeserializer::new(seq)).map(Inheritable::Value)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut inherits = false;
+                while let Some(key) = map.next_key::<String>()? {
+                    if key != "workspace" {
+                        return Err(A::Error::custom(format!(
+                            "unexpected `{key}`: expected a value, or `workspace = true`"
+                        )));
+                    }
+                    if !map.next_value::<bool>()? {
+                        return Err(A::Error::custom("`workspace` cannot be false"));
+                    }
+                    inherits = true;
+                }
+                if inherits {
+                    Ok(Inheritable::Workspace)
+                } else {
+                    Err(A::Error::custom("expected a value, or `workspace = true`"))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(Inherit(std::marker::PhantomData))
+    }
+}
+
+/// The values of a `[var]` table written in the manifest.
+pub(crate) fn plain_vars(raw: &BTreeMap<String, Inheritable<String>>) -> BTreeMap<String, String> {
+    raw.iter()
+        .filter_map(|(name, value)| match value {
+            Inheritable::Value(v) => Some((name.clone(), v.clone())),
+            Inheritable::Workspace => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawManifest {
@@ -103,7 +178,7 @@ struct RawManifest {
     #[serde(default)]
     package: RawPackage,
     #[serde(default)]
-    var: BTreeMap<String, String>,
+    var: BTreeMap<String, Inheritable<String>>,
     #[serde(default)]
     compiler: RawCompiler,
     #[serde(default)]
@@ -118,6 +193,40 @@ struct RawManifest {
     dependencies: BTreeMap<String, workspace::RawDependency>,
     #[serde(default)]
     test: RawTest,
+}
+
+impl RawManifest {
+    /// The settings asking for the values of a workspace.
+    pub(crate) fn inherited_settings(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if lints_inherit(&self.lints) {
+            out.push("lints".to_owned());
+        }
+        if self.format.inherits() {
+            out.push("format".to_owned());
+        }
+        let vars = self.var.iter().filter(|(_, v)| matches!(v, Inheritable::Workspace));
+        out.extend(vars.map(|(name, _)| format!("var.{name}")));
+        let (compiler, build) = (&self.compiler, &self.build);
+        let mut asks = |name: &str, inherits: bool| {
+            if inherits {
+                out.push(name.to_owned());
+            }
+        };
+        let path = |p: &Option<Spanned<Inheritable<String>>>| {
+            p.as_ref().is_some_and(|p| matches!(p.get_ref(), Inheritable::Workspace))
+        };
+        let flag = |f: Option<Inheritable<bool>>| matches!(f, Some(Inheritable::Workspace));
+        asks("compiler.path", path(&compiler.path));
+        asks("compiler.args", matches!(compiler.args, Some(Inheritable::Workspace)));
+        asks("build.imports", matches!(build.imports, Some(Inheritable::Workspace)));
+        asks("build.flags", path(&build.flags));
+        asks("build.optimize", flag(build.optimize.clone()));
+        asks("build.release", flag(build.release.clone()));
+        asks("build.final", flag(build.r#final.clone()));
+        asks("build.quiet", flag(build.quiet.clone()));
+        out
+    }
 }
 
 /// `[test]`.
@@ -510,24 +619,23 @@ struct RawPackage {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawCompiler {
-    path: Option<Spanned<String>>,
-    #[serde(default)]
-    args: Vec<String>,
+    path: Option<Spanned<Inheritable<String>>>,
+    args: Option<Inheritable<Vec<String>>>,
 }
 
-/// `[build]`. Unset values come from `[workspace.build]`, then defaults.
+/// `[build]`. Unset values are the defaults; `key.workspace = true` takes the
+/// one of `[workspace.build]`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawBuild {
     sources: Option<Vec<Spanned<String>>>,
     output: Option<Spanned<String>>,
-    #[serde(default)]
-    imports: Vec<Spanned<String>>,
-    flags: Option<Spanned<String>>,
-    optimize: Option<bool>,
-    release: Option<bool>,
-    r#final: Option<bool>,
-    quiet: Option<bool>,
+    imports: Option<Inheritable<Vec<Spanned<String>>>>,
+    flags: Option<Spanned<Inheritable<String>>>,
+    optimize: Option<Inheritable<bool>>,
+    release: Option<Inheritable<bool>>,
+    r#final: Option<Inheritable<bool>>,
+    quiet: Option<Inheritable<bool>>,
 }
 
 fn default_sources() -> Vec<Spanned<String>> {
@@ -562,8 +670,7 @@ pub struct Project {
     pub sources: Vec<PathBuf>,
     /// `build.output`: the directory of the compiled `.pex` files.
     pub output: PathBuf,
-    /// `build.imports`: other source directories, in priority order (the
-    /// imports of `[workspace.build]` included, after).
+    /// `build.imports`: other source directories, in priority order.
     pub imports: Vec<PathBuf>,
     /// The sources of `[dependencies]`, transitively: imported before
     /// `imports`.
@@ -719,19 +826,42 @@ fn parse_format_in(text: &str, base: &Path) -> Result<FormatSettings, Vec<Manife
     if errors.is_empty() { Ok(settings) } else { Err(errors) }
 }
 
-/// Whether `[format] exclude` of the manifest found above `script` leaves it out.
-pub fn format_excludes(script: &Path) -> bool {
+/// The `[format]` settings of `script`: of the manifest found above it, when its
+/// `[build] sources` or `[test] sources` contain the script. Others scripts below
+/// the manifest are not of its project.
+fn format_settings_of(script: &Path) -> Option<FormatSettings> {
     let script = std::path::absolute(script).unwrap_or_else(|_| script.to_path_buf());
-    script
-        .parent()
-        .and_then(find_manifest_upwards)
-        .and_then(|manifest| load_format(&manifest).ok())
-        .is_some_and(|settings| settings.exclude.matches(&script))
+    let manifest = script.parent().and_then(find_manifest_upwards)?;
+    let text = std::fs::read_to_string(&manifest).ok()?;
+    let raw: RawManifest = toml::from_str(&text).ok()?;
+    // A manifest of `[workspace]` only is no project.
+    if raw.workspace.is_some() && raw.package.name.is_none() && raw.build.sources.is_none() {
+        return None;
+    }
+    let dir = parent_dir(&manifest);
+    let sources = raw.build.sources.clone().unwrap_or_else(default_sources);
+    let contains = |source: &Spanned<String>| {
+        // Variables need more than formatting does: it may be there.
+        source.get_ref().contains("${") || {
+            let mut below = stdx::PathExcludes::default();
+            below.add(&resolve_path(dir, source.get_ref()), "**");
+            below.matches(&script)
+        }
+    };
+    if !sources.iter().chain(&raw.test.sources).any(contains) {
+        return None;
+    }
+    load_format(&manifest).ok()
+}
+
+/// Whether `[format] exclude` of the project of `script` leaves it out.
+pub fn format_excludes(script: &Path) -> bool {
+    let absolute = std::path::absolute(script).unwrap_or_else(|_| script.to_path_buf());
+    format_settings_of(script).is_some_and(|settings| settings.exclude.matches(&absolute))
 }
 
 /// The formatter options of a script: defaults, then `base` (e.g. the editor
-/// settings), then `.editorconfig`, then `[format]` of the manifest found
-/// above the script.
+/// settings), then `.editorconfig`, then `[format]` of its project.
 pub fn format_options_for(
     script: &Path,
     base: impl FnOnce(&mut papyrus_fmt::FormatOptions),
@@ -739,9 +869,7 @@ pub fn format_options_for(
     let mut options = papyrus_fmt::FormatOptions::default();
     base(&mut options);
     EditorConfig::for_file(script).apply(&mut options);
-    if let Some(manifest) = script.parent().and_then(find_manifest_upwards)
-        && let Ok(settings) = load_format(&manifest)
-    {
+    if let Some(settings) = format_settings_of(script) {
         settings.apply(&mut options);
     }
     options
@@ -769,8 +897,23 @@ pub fn parse(
     parse_with(manifest_path, text, local, vars, None)
 }
 
-/// Like [`parse`], for a member of a workspace: unset values come from the
-/// workspace.
+/// The value of the workspace for `key.workspace = true`, `setting` being the
+/// key; `None` without workspace, when loaded on its own.
+fn inherit<T>(
+    setting: &str,
+    inherited: Option<&workspace::Inherited>,
+    value: impl FnOnce(&workspace::Inherited) -> Option<T>,
+    errors: &mut Vec<ManifestError>,
+) -> Option<T> {
+    let found = value(inherited?);
+    if found.is_none() {
+        errors.push(not_defined(setting));
+    }
+    found
+}
+
+/// Like [`parse`], for a member of a workspace: `key.workspace = true` takes the
+/// value of the workspace.
 pub(crate) fn parse_with(
     manifest_path: &Path,
     text: &str,
@@ -780,13 +923,22 @@ pub(crate) fn parse_with(
 ) -> Result<Project, Vec<ManifestError>> {
     let raw: RawManifest = toml::from_str(text)
         .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span())])?;
+    let outside = vars;
     let mut vars = vars.clone();
-    // The variables of the workspace come first; the member wins.
-    if let Some(i) = inherited {
-        vars.manifest = i.var.clone();
-        vars.local = i.local.clone();
+    vars.manifest.extend(plain_vars(&raw.var));
+    let mut var_errors = Vec::new();
+    for (name, value) in &raw.var {
+        if matches!(value, Inheritable::Workspace)
+            && let Some(i) = inherited
+        {
+            match i.var_value(name, outside) {
+                Ok(value) => {
+                    vars.manifest.insert(name.clone(), value);
+                }
+                Err(error) => var_errors.push(error),
+            }
+        }
     }
-    vars.manifest.extend(raw.var.clone());
     if let Some(local) = local {
         let raw_local: RawLocal = toml::from_str(local).map_err(|e| {
             vec![ManifestError::new(format!("{LOCAL_MANIFEST_NAME}: {}", e.message()), None)]
@@ -796,33 +948,64 @@ pub(crate) fn parse_with(
 
     let root = manifest_path.parent().map(Path::to_path_buf).unwrap_or_default();
     let mut resolver =
-        Resolver { root: &root, vars: &vars, used: BTreeMap::new(), errors: Vec::new() };
+        Resolver { root: &root, vars: &vars, used: BTreeMap::new(), errors: var_errors };
 
     let raw_sources = raw.build.sources.clone().unwrap_or_else(default_sources);
-    let compiler = raw
-        .compiler
-        .path
-        .as_ref()
-        .map(|p| resolver.path(p))
-        .or_else(|| inherited.and_then(|i| i.compiler.clone()));
+    let compiler = match &raw.compiler.path {
+        None => None,
+        Some(path) => match path.get_ref() {
+            Inheritable::Value(value) => Some(resolver.path_at(value, span_of(path))),
+            Inheritable::Workspace => {
+                inherit("compiler.path", inherited, |i| i.compiler.clone(), &mut resolver.errors)
+            }
+        },
+    };
     let sources: Vec<PathBuf> = raw_sources.iter().map(|p| resolver.path(p)).collect();
     let output = match &raw.build.output {
         Some(p) => resolver.path(p),
         None => root.join("output"),
     };
-    let mut imports: Vec<PathBuf> = raw.build.imports.iter().map(|p| resolver.path(p)).collect();
-    if let Some(i) = inherited {
-        imports
-            .extend(i.imports.iter().filter(|d| !imports.contains(d)).cloned().collect::<Vec<_>>());
+    // Like `Cargo.toml`: a value of the member replaces the one of the workspace.
+    let own_imports: &[Spanned<String>] = match &raw.build.imports {
+        Some(Inheritable::Value(list)) => list,
+        _ => &[],
+    };
+    let mut imports: Vec<PathBuf> = own_imports.iter().map(|p| resolver.path(p)).collect();
+    if matches!(raw.build.imports, Some(Inheritable::Workspace)) {
+        imports = inherit("build.imports", inherited, |i| i.imports.clone(), &mut resolver.errors)
+            .unwrap_or_default();
     }
-    let flags = raw
-        .build
-        .flags
-        .as_ref()
-        .map(|p| resolver.path(p))
-        .or_else(|| inherited.and_then(|i| i.flags.clone()));
-    let mut extra_args: Vec<String> = inherited.map(|i| i.args.clone()).unwrap_or_default();
-    extra_args.extend(raw.compiler.args.iter().map(|a| resolver.expand(a, None)));
+    let flags = match &raw.build.flags {
+        None => None,
+        Some(path) => match path.get_ref() {
+            Inheritable::Value(value) => Some(resolver.path_at(value, span_of(path))),
+            Inheritable::Workspace => {
+                inherit("build.flags", inherited, |i| i.flags.clone(), &mut resolver.errors)
+            }
+        },
+    };
+    let extra_args: Vec<String> = match &raw.compiler.args {
+        None => Vec::new(),
+        Some(Inheritable::Value(args)) => args.iter().map(|a| resolver.expand(a, None)).collect(),
+        Some(Inheritable::Workspace) => {
+            inherit("compiler.args", inherited, |i| i.args.clone(), &mut resolver.errors)
+                .unwrap_or_default()
+        }
+    };
+    let mut flag = |setting: &str,
+                    own: &Option<Inheritable<bool>>,
+                    ws: fn(&workspace::Inherited) -> Option<bool>,
+                    default: bool| match own {
+        None => default,
+        Some(Inheritable::Value(value)) => *value,
+        Some(Inheritable::Workspace) => {
+            inherit(setting, inherited, ws, &mut resolver.errors).unwrap_or(default)
+        }
+    };
+    let optimize = flag("build.optimize", &raw.build.optimize, |i| i.optimize, true);
+    let release = flag("build.release", &raw.build.release, |i| i.release, false);
+    let r#final = flag("build.final", &raw.build.r#final, |i| i.r#final, false);
+    let quiet = flag("build.quiet", &raw.build.quiet, |i| i.quiet, true);
     // Like `Cargo.toml`: only the tables asking for it, which set nothing else.
     let mut format = format_settings(&raw.format, &root, &mut resolver.errors);
     if raw.format.inherits()
@@ -849,9 +1032,6 @@ pub(crate) fn parse_with(
         .iter()
         .map(|(name, dep)| (name.clone(), resolver.path(&dep.path)))
         .collect();
-    let flag = |own: Option<bool>, ws: Option<Option<bool>>, default: bool| {
-        own.or(ws.flatten()).unwrap_or(default)
-    };
 
     if !resolver.errors.is_empty() {
         return Err(resolver.errors);
@@ -859,14 +1039,11 @@ pub(crate) fn parse_with(
     let variables = resolver.used;
 
     let mut warnings = Vec::new();
-    let span = |s: &Spanned<String>| Some(s.span()).filter(|r| !r.is_empty());
-    for (path, raw) in
-        sources.iter().zip(&raw_sources).chain(imports.iter().zip(&raw.build.imports))
-    {
+    for (path, raw) in sources.iter().zip(&raw_sources).chain(imports.iter().zip(own_imports)) {
         if !path.is_dir() {
             warnings.push(ManifestError::new(
                 format!("directory not found: {}", path.display()),
-                span(raw),
+                span_of(raw),
             ));
         }
     }
@@ -875,14 +1052,16 @@ pub(crate) fn parse_with(
     {
         warnings.push(ManifestError::new(
             format!("flags file not found: {}", path.display()),
-            span(raw),
+            span_of(raw),
         ));
     }
     if let (Some(path), Some(raw)) = (&compiler, &raw.compiler.path)
         && !path.is_file()
     {
-        warnings
-            .push(ManifestError::new(format!("compiler not found: {}", path.display()), span(raw)));
+        warnings.push(ManifestError::new(
+            format!("compiler not found: {}", path.display()),
+            span_of(raw),
+        ));
     }
 
     Ok(Project {
@@ -903,15 +1082,20 @@ pub(crate) fn parse_with(
         dependencies,
         workspace_manifest: inherited.map(|i| i.manifest.clone()),
         flags,
-        optimize: flag(raw.build.optimize, inherited.map(|i| i.optimize), true),
-        release: flag(raw.build.release, inherited.map(|i| i.release), false),
-        r#final: flag(raw.build.r#final, inherited.map(|i| i.r#final), false),
-        quiet: flag(raw.build.quiet, inherited.map(|i| i.quiet), true),
+        optimize,
+        release,
+        r#final,
+        quiet,
         format,
         lints,
         variables,
         warnings,
     })
+}
+
+/// The range of a value, when it was read from a file.
+fn span_of<T>(value: &Spanned<T>) -> Option<Range<usize>> {
+    Some(value.span()).filter(|r| !r.is_empty())
 }
 
 struct Resolver<'a> {
@@ -923,8 +1107,11 @@ struct Resolver<'a> {
 
 impl Resolver<'_> {
     fn path(&mut self, value: &Spanned<String>) -> PathBuf {
-        let span = Some(value.span()).filter(|r| !r.is_empty());
-        let expanded = self.expand(value.get_ref(), span);
+        self.path_at(value.get_ref(), span_of(value))
+    }
+
+    fn path_at(&mut self, value: &str, span: Option<Range<usize>>) -> PathBuf {
+        let expanded = self.expand(value, span);
         resolve_path(self.root, &expanded)
     }
 
@@ -941,16 +1128,40 @@ impl Resolver<'_> {
 
 /// The variables seen from a manifest: `vars` with the `[var]` tables of the
 /// manifest and of its local file filled in. Invalid TOML is tolerated, so
-/// that hovers keep working while the file is edited.
-pub fn manifest_variables(text: &str, local: Option<&str>, vars: &Variables) -> Variables {
-    fn var_table(text: &str) -> BTreeMap<String, String> {
-        let Ok(table) = text.parse::<toml::Table>() else { return BTreeMap::new() };
-        let Some(toml::Value::Table(vars)) = table.get("var") else { return BTreeMap::new() };
-        vars.iter().filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_owned()))).collect()
+/// that hovers keep working while the file is edited. `manifest_path` finds the
+/// values of `NAME.workspace = true`.
+pub fn manifest_variables(
+    manifest_path: &Path,
+    text: &str,
+    local: Option<&str>,
+    vars: &Variables,
+) -> Variables {
+    fn var_table(text: &str) -> toml::Table {
+        let Ok(mut table) = text.parse::<toml::Table>() else { return toml::Table::new() };
+        match table.remove("var") {
+            Some(toml::Value::Table(vars)) => vars,
+            _ => toml::Table::new(),
+        }
     }
+    let values = |table: &toml::Table| -> BTreeMap<String, String> {
+        let strings = table.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned())));
+        strings.collect()
+    };
+    let own = var_table(text);
     let mut vars = vars.clone();
-    vars.manifest = var_table(text);
-    vars.local = local.map(var_table).unwrap_or_default();
+    vars.manifest = values(&own);
+    vars.local = local.map(|l| values(&var_table(l))).unwrap_or_default();
+    let inherits =
+        |v: &toml::Value| v.get("workspace").and_then(toml::Value::as_bool) == Some(true);
+    if own.values().any(inherits)
+        && let Some((_, ws)) = workspace::workspace_of(manifest_path)
+    {
+        for name in own.iter().filter(|(_, v)| inherits(v)).map(|(k, _)| k) {
+            if let Some(value) = ws.var.get(name) {
+                vars.manifest.insert(name.clone(), value.clone());
+            }
+        }
+    }
     vars
 }
 
@@ -1320,7 +1531,12 @@ mod tests {
         assert_eq!(variable_at(text, at("${GAME}") + 3).unwrap().0, "GAME");
         assert_eq!(variable_at(text, at("env:") + 1).unwrap().0, "env:GAME_ENV");
         assert!(variable_at(text, at("imports") + 1).is_none(), "not in [var]");
-        let vars = manifest_variables(text, Some("[var]\nLOCAL = \"1\"\n"), &vars());
+        let vars = manifest_variables(
+            Path::new("/nowhere/papyrus.toml"),
+            text,
+            Some("[var]\nLOCAL = \"1\"\n"),
+            &vars(),
+        );
         assert_eq!(vars.lookup("GAME").unwrap(), ("/env/game".to_owned(), VarSource::Manifest));
         assert_eq!(vars.lookup("LOCAL").unwrap().1, VarSource::Local);
     }
@@ -1421,7 +1637,7 @@ mod tests {
         w("mods/Lib/papyrus.toml", "[package]\nname = \"Lib\"\n");
         w(
             "mods/App/papyrus.toml",
-            "[package]\nname = \"App\"\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nworkspace = true\n[format]\nworkspace = true\n",
+            "[package]\nname = \"App\"\n[var]\nGAME.workspace = true\n[build]\noutput = \"${GAME}/out\"\nimports.workspace = true\nflags.workspace = true\noptimize.workspace = true\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nworkspace = true\n[format]\nworkspace = true\n",
         );
         w("mods/Old/papyrus.toml", "[package]\nname = \"Old\"\n");
 
@@ -1432,13 +1648,17 @@ mod tests {
         let app = &ws.members[0];
         assert_eq!(app.flags.as_deref(), Some(dir.join("game/f.flg").as_path()));
         assert!(!app.optimize);
+        assert_eq!(app.output, dir.join("mods/App/game/out"));
         assert_eq!(app.imports, [dir.join("game")]);
         assert_eq!(
             app.import_dirs(),
             [dir.join("mods/App"), dir.join("mods/Lib"), dir.join("game")]
         );
+        // Without `key.workspace = true`, like in `Cargo.toml`: nothing of the workspace.
         let lib = &ws.members[1];
-        assert_eq!(lib.import_dirs(), [dir.join("mods/Lib"), dir.join("game")]);
+        assert_eq!(lib.import_dirs(), [dir.join("mods/Lib")]);
+        assert!(lib.optimize);
+        assert_eq!(lib.flags, None);
         // With `workspace = true`, the tables of the workspace.
         let level = |p: &Project, code| p.lints.level(papyrus_lint::find(code).unwrap());
         assert_eq!(level(app, "unreachable-code"), papyrus_lint::Level::Deny);
@@ -1468,6 +1688,112 @@ mod tests {
             old.level(papyrus_lint::find("unreachable-code").unwrap()),
             papyrus_lint::Level::Warn
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn format_settings_are_of_the_scripts_of_the_project() {
+        let dir = std::env::temp_dir().join(format!("papyrus-fmt-of-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("papyrus.toml");
+        let size = |script: &str| {
+            let options = format_options_for(&dir.join(script), |o| {
+                o.indent = papyrus_fmt::Indent::Spaces(2);
+            });
+            options.indent
+        };
+        let eight = papyrus_fmt::Indent::Spaces(8);
+        let editor = papyrus_fmt::Indent::Spaces(2);
+
+        std::fs::write(
+            &manifest,
+            "[build]\nsources = [\"src\"]\n[test]\nsources = [\"tests\"]\n[format]\nindent-style = \"space\"\nindent-size = 8\nexclude = [\"src/gen\"]\n",
+        )
+        .unwrap();
+        assert_eq!(size("src/A.psc"), eight);
+        assert_eq!(size("src/sub/A.psc"), eight);
+        assert_eq!(size("tests/T.psc"), eight);
+        assert_eq!(size("other/A.psc"), editor);
+        assert!(format_excludes(&dir.join("src/gen/A.psc")));
+        assert!(!format_excludes(&dir.join("other/gen/A.psc")));
+
+        // Without `sources`, everything below the manifest is.
+        std::fs::write(&manifest, "[format]\nindent-style = \"space\"\nindent-size = 8\n").unwrap();
+        assert_eq!(size("other/A.psc"), eight);
+
+        // A manifest of `[workspace]` only has no scripts.
+        std::fs::write(&manifest, "[workspace]\nmembers = []\n").unwrap();
+        assert_eq!(size("other/A.psc"), editor);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn workspace_values_are_used_as_in_cargo() {
+        let dir = std::env::temp_dir().join(format!("papyrus-keys-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("App")).unwrap();
+        std::fs::create_dir_all(dir.join("Alone")).unwrap();
+        let w = |p: &str, text: &str| std::fs::write(dir.join(p), text).unwrap();
+        w(
+            "papyrus.toml",
+            "[var]\nROOT = \"root\"\n[workspace]\nmembers = [\"App\"]\n[workspace.var]\nA = \"${ROOT}/a\"\n[workspace.compiler]\nargs = [\"-x\"]\n[workspace.build]\nimports = [\"${A}\"]\n",
+        );
+        let manifest = dir.join("App/papyrus.toml");
+        let load = |text: &str| {
+            std::fs::write(&manifest, text).unwrap();
+            load_workspace(&manifest, &vars())
+        };
+        let errors = |text: &str| {
+            let errors = load(text).unwrap_err();
+            errors.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n")
+        };
+
+        // A variable of the workspace, expanded there; the others are not seen.
+        let ws = load("[var]\nA.workspace = true\n[build]\noutput = \"${A}\"\n").unwrap();
+        assert_eq!(ws.members[0].output, dir.join("App/root/a"));
+        assert!(errors("[build]\noutput = \"${A}\"\n").contains("undefined variable `A`"));
+        assert!(
+            errors("[var]\nROOT.workspace = true\n")
+                .contains("`workspace.var.ROOT` was not defined")
+        );
+
+        // A value of the member replaces the one of the workspace, not added to it.
+        let ws = load("[compiler]\nargs.workspace = true\n").unwrap();
+        assert_eq!(ws.members[0].extra_args, ["-x"]);
+        let ws = load("[compiler]\nargs = [\"-y\"]\n").unwrap();
+        assert_eq!(ws.members[0].extra_args, ["-y"]);
+        let ws = load("[build]\nimports.workspace = true\n").unwrap();
+        assert_eq!(ws.members[0].imports, [dir.join("root/a")]);
+        let ws = load("[build]\nimports = [\"mine\"]\n").unwrap();
+        assert_eq!(ws.members[0].imports, [dir.join("App/mine")]);
+
+        // What cannot be inherited.
+        assert!(
+            errors("[build]\nflags.workspace = true\n")
+                .contains("`workspace.build.flags` was not defined")
+        );
+        assert!(
+            errors("[build]\nquiet.workspace = true\n")
+                .contains("`workspace.build.quiet` was not defined")
+        );
+        assert!(
+            errors("[build]\nimports.workspace = false\n").contains("`workspace` cannot be false")
+        );
+        // `sources` and `output` belong to each member.
+        assert!(load("[build]\noutput.workspace = true\n").is_err());
+        assert!(load("[build]\nsources.workspace = true\n").is_err());
+
+        // Without workspace.
+        let alone = dir.join("Alone/papyrus.toml");
+        std::fs::write(&alone, "[build]\nimports.workspace = true\n").unwrap();
+        let found = load_workspace(&alone, &vars()).unwrap_err();
+        assert!(found[0].message.contains("failed to find a workspace root"), "{found:?}");
+
+        // The hover of a variable.
+        let text = "[var]\nA.workspace = true\n";
+        let seen = manifest_variables(&manifest, text, None, &vars());
+        assert_eq!(seen.manifest.get("A").map(String::as_str), Some("${ROOT}/a"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

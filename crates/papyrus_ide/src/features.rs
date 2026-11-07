@@ -64,8 +64,9 @@ pub(crate) fn def_at(sema: &Sema<'_>, offset: TextSize) -> Option<(TextRange, De
 /// The definition of a flag token.
 pub(crate) fn flag_def(sema: &Sema<'_>, tok: SyntaxToken<'_>) -> Option<Def> {
     if tok.kind() == SyntaxKind::IDENT {
-        let (i, _) = sema.ws.flags().get(tok.text())?;
-        Some(Def::Flag(i as u32))
+        let table = sema.ws.flag_table_of(sema.file);
+        let (i, _) = sema.ws.flag_table(table).get(tok.text())?;
+        Some(Def::Flag(table, i as u32))
     } else {
         Some(Def::LanguageFlag(tok.kind()))
     }
@@ -183,8 +184,8 @@ pub(crate) fn def_info(sema: &Sema<'_>, def: Def) -> DefInfo {
             container: Some("built-in".to_owned()),
             docs: b.docs().to_owned(),
         },
-        Def::Flag(i) => {
-            let flags = sema.ws.flags();
+        Def::Flag(table, i) => {
+            let flags = sema.ws.flag_table(table);
             let def = &flags.defs[i as usize];
             DefInfo {
                 signature: def.signature(),
@@ -231,12 +232,12 @@ pub(crate) fn def_location(sema: &Sema<'_>, def: Def) -> Option<(NavFile, TextRa
             let range = sema.ws.file(file).index.name_range?;
             script(file, range, range)
         }
-        Def::Flag(i) => {
-            let flags = sema.ws.flags();
+        Def::Flag(table, i) => {
+            let flags = sema.ws.flag_table(table);
             // The built-in defaults have no file to jump to.
             flags.path.as_ref()?;
             let def = flags.defs.get(i as usize)?;
-            Some((NavFile::Flags, def.name_range, def.full_range))
+            Some((NavFile::Flags(table), def.name_range, def.full_range))
         }
         Def::Builtin(..) | Def::LanguageFlag(_) => None,
     }

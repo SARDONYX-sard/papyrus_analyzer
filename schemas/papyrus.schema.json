@@ -21,22 +21,18 @@
           "type": "string",
           "description": "Version of the mod."
         },
-        "description": {
-          "type": "string"
-        },
+        "description": { "type": "string" },
         "authors": {
           "type": "array",
-          "items": {
-            "type": "string"
-          }
+          "items": { "type": "string" }
         }
       }
     },
     "var": {
       "type": "object",
-      "description": "Shared defaults of ${NAME} variables; values may use ${env:NAME} for environment variables. Overridden by the papyrus.var editor setting / papyrus_analyzer --var and [var] of papyrus.local.toml. Keep machine specific paths out of this committed file.",
+      "description": "Shared defaults of ${NAME} variables; values may use ${env:NAME} for environment variables. Overridden by the papyrus.var editor setting / papyrus_analyzer --var and [var] of papyrus.local.toml. Keep machine specific paths out of this committed file. NAME.workspace = true takes the value of [workspace.var].",
       "additionalProperties": {
-        "type": "string"
+        "anyOf": [{ "type": "string" }, { "$ref": "#/definitions/inherit" }]
       }
     },
     "compiler": {
@@ -44,14 +40,17 @@
       "additionalProperties": false,
       "properties": {
         "path": {
-          "type": "string",
+          "anyOf": [{ "type": "string" }, { "$ref": "#/definitions/inherit" }],
           "description": "Path of PapyrusCompiler.exe. Without it, the built-in compiler is used."
         },
         "args": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
+          "anyOf": [
+            {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            { "$ref": "#/definitions/inherit" }
+          ],
           "default": [],
           "description": "Extra arguments passed to the compiler as is."
         }
@@ -63,9 +62,7 @@
       "properties": {
         "sources": {
           "type": "array",
-          "items": {
-            "type": "string"
-          },
+          "items": { "type": "string" },
           "default": ["."],
           "description": "Directories of the scripts to compile, searched recursively."
         },
@@ -75,34 +72,37 @@
           "description": "Directory of the compiled .pex files; the directory structure of sources is kept. Decompiled scripts go to its decompile folder."
         },
         "imports": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
+          "anyOf": [
+            {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            { "$ref": "#/definitions/inherit" }
+          ],
           "default": [],
           "description": "Other script source directories, in lookup order (after sources)."
         },
         "flags": {
-          "type": "string",
+          "anyOf": [{ "type": "string" }, { "$ref": "#/definitions/inherit" }],
           "description": "The flags file, e.g. TESV_Papyrus_Flags.flg. Required by PapyrusCompiler.exe; without it, the built-in compiler uses the flags of Skyrim."
         },
         "optimize": {
-          "type": "boolean",
+          "anyOf": [{ "type": "boolean" }, { "$ref": "#/definitions/inherit" }],
           "default": true,
           "description": "-optimize"
         },
         "release": {
-          "type": "boolean",
+          "anyOf": [{ "type": "boolean" }, { "$ref": "#/definitions/inherit" }],
           "default": false,
           "description": "-release: strip DebugOnly calls."
         },
         "final": {
-          "type": "boolean",
+          "anyOf": [{ "type": "boolean" }, { "$ref": "#/definitions/inherit" }],
           "default": false,
           "description": "-final: strip BetaOnly calls."
         },
         "quiet": {
-          "type": "boolean",
+          "anyOf": [{ "type": "boolean" }, { "$ref": "#/definitions/inherit" }],
           "default": true,
           "description": "-quiet: only report errors."
         }
@@ -363,7 +363,7 @@
     "workspace": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Several projects in one folder, like Cargo workspaces. Members inherit var, compiler and build; their own values win (imports are appended). lints and format apply to the members asking for them with workspace = true.",
+      "description": "Several projects in one folder, like Cargo workspaces. Like in Cargo.toml, nothing applies by itself: a member asks for each value with key.workspace = true, and for lints and format as a whole with workspace = true.",
       "properties": {
         "members": {
           "type": "array",
@@ -375,19 +375,63 @@
           "items": { "type": "string" },
           "description": "Directories matched by members that are not members."
         },
-        "var": { "$ref": "#/properties/var" },
-        "compiler": { "$ref": "#/properties/compiler" },
+        "var": {
+          "type": "object",
+          "description": "Variables members may ask for with NAME.workspace = true. The paths of this file may use them.",
+          "additionalProperties": { "type": "string" }
+        },
+        "compiler": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path of PapyrusCompiler.exe. Without it, the built-in compiler is used."
+            },
+            "args": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Extra arguments passed to the compiler as is."
+            }
+          },
+          "description": "Values members may ask for with key.workspace = true."
+        },
         "build": {
           "type": "object",
           "additionalProperties": false,
-          "description": "Defaults of [build] of every member.",
+          "description": "Values members may ask for with key.workspace = true.",
           "properties": {
-            "imports": { "$ref": "#/properties/build/properties/imports" },
-            "flags": { "$ref": "#/properties/build/properties/flags" },
-            "optimize": { "$ref": "#/properties/build/properties/optimize" },
-            "release": { "$ref": "#/properties/build/properties/release" },
-            "final": { "$ref": "#/properties/build/properties/final" },
-            "quiet": { "$ref": "#/properties/build/properties/quiet" }
+            "imports": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "Other script source directories, in lookup order (after sources)."
+            },
+            "flags": {
+              "type": "string",
+              "description": "The flags file, e.g. TESV_Papyrus_Flags.flg. Required by PapyrusCompiler.exe; without it, the built-in compiler uses the flags of Skyrim."
+            },
+            "optimize": {
+              "type": "boolean",
+              "default": true,
+              "description": "-optimize"
+            },
+            "release": {
+              "type": "boolean",
+              "default": false,
+              "description": "-release: strip DebugOnly calls."
+            },
+            "final": {
+              "type": "boolean",
+              "default": false,
+              "description": "-final: strip BetaOnly calls."
+            },
+            "quiet": {
+              "type": "boolean",
+              "default": true,
+              "description": "-quiet: only report errors."
+            }
           }
         },
         "lints": { "$ref": "#/properties/lints" },
@@ -422,9 +466,23 @@
     }
   },
   "definitions": {
+    "inherit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspace"],
+      "properties": {
+        "workspace": {
+          "const": true,
+          "description": "Take the value of the workspace, like in Cargo.toml."
+        }
+      }
+    },
     "exclude": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^[^!]" },
+      "items": {
+        "type": "string",
+        "pattern": "^[^!]"
+      },
       "default": []
     },
     "nameCase": {

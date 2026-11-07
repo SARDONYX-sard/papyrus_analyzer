@@ -82,9 +82,9 @@ impl Lines {
         Some(Lines { text, index })
     }
 
-    /// The lines of the flags file.
-    pub(crate) fn flags(ws: &Workspace) -> Lines {
-        let text = ws.flags().text.clone();
+    /// The lines of a flags file.
+    pub(crate) fn flags(flags: &papyrus_ide::flags::FlagTable) -> Lines {
+        let text = flags.text.clone();
         let index = Arc::new(LineIndex::new(&text));
         Lines { text, index }
     }

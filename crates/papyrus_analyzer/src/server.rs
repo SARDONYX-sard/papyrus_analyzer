@@ -75,6 +75,9 @@ pub(crate) struct Server {
     /// The `papyrus.toml` found in the workspace (the root of its
     /// `[workspace]`), valid or not.
     pub(crate) manifest: Option<PathBuf>,
+    /// The workspace folders without manifest, when another one has one: all
+    /// of them work like `limited` mode.
+    pub(crate) limited_roots: Vec<PathBuf>,
     /// The manifests whose problems are published.
     pub(crate) manifest_files: Vec<PathBuf>,
     /// Why `manifest` could not be loaded.
@@ -178,6 +181,7 @@ impl Server {
             project: None,
             members: Vec::new(),
             manifest: None,
+            limited_roots: Vec::new(),
             manifest_files: Vec::new(),
             manifest_error: None,
             other_docs: Default::default(),
@@ -495,7 +499,7 @@ impl Server {
             && self.other_docs.remove(path).is_some()
         {
             if self.ws.is_flags_file(path) {
-                self.ws.close_flags();
+                self.ws.reload_flags(path);
             }
             if is_manifest(path) {
                 // Keep showing problems of the file on disk.
@@ -555,7 +559,8 @@ impl Server {
             }
             if is_flags(&path) {
                 if self.ws.is_flags_file(&path) && !self.other_docs.contains_key(&path) {
-                    self.select_flags_file(Vec::new());
+                    self.ws.reload_flags(&path);
+                    self.publish_flags_diagnostics();
                 }
                 continue;
             }
@@ -691,7 +696,12 @@ impl Server {
                 .collect(),
             manifest: self.manifest.as_ref().map(|p| p.display().to_string()),
             manifest_error: self.manifest_error.clone(),
-            flags_file: self.ws.flags().path.as_ref().map(|p| p.display().to_string()),
+            flags_file: self
+                .project
+                .as_ref()
+                .and_then(|p| p.flags.as_ref())
+                .or(self.ws.flags().path.as_ref())
+                .map(|p| p.display().to_string()),
             variables: self.variables_report(),
             build_dirs: self.build_dirs(),
             sources: self
@@ -756,15 +766,15 @@ impl Server {
 
     /// The directories whose scripts are known. With a manifest, what it names:
     /// sources, tests, dependencies and imports, as for the compiler; other
-    /// scripts below the workspace folders are not of the project. Without
-    /// (limited mode), the workspace folders.
-    fn index_dirs(&self) -> Vec<(PathBuf, Origin)> {
+    /// scripts below its workspace folder are not of the project. A workspace
+    /// folder without manifest (limited mode): all of it.
+    pub(crate) fn index_dirs(&self) -> Vec<(PathBuf, Origin)> {
         let mut dirs: Vec<(PathBuf, Origin)> = Vec::new();
         let own: Vec<PathBuf> = if self.members.is_empty() {
             self.roots.clone()
         } else {
             let sources = self.members.iter().flat_map(|m| m.sources.iter().chain(&m.test_sources));
-            sources.cloned().collect()
+            sources.chain(&self.limited_roots).cloned().collect()
         };
         for dir in own {
             if !dirs.iter().any(|(d, _)| dir.starts_with(d)) {

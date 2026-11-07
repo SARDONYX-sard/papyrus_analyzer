@@ -5,9 +5,18 @@
 name    = "MyMod"
 version = "0.1.0"
 
+[compiler]
+args.workspace = true
+
 [build]
-sources = ["src"]
-output  = "${workspaceFolder}/target/papyrus"
+sources            = ["src"]
+output             = "${workspaceFolder}/target/papyrus"
+imports.workspace  = true
+flags.workspace    = true
+optimize.workspace = true
+release.workspace  = true
+final.workspace    = true
+quiet.workspace    = true
 
 [test]
 sources = ["tests"]

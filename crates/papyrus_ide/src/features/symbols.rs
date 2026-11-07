@@ -4,6 +4,7 @@ use papyrus_parser::TextRange;
 
 use crate::{
     FileId, Workspace,
+    flags::FlagTable,
     index::{Member, MemberKind, ScriptIndex},
 };
 
@@ -109,8 +110,8 @@ pub fn document_symbols(ws: &Workspace, file: FileId) -> Vec<DocumentSymbol> {
 }
 
 /// The outline of the flags file.
-pub fn flag_file_symbols(ws: &Workspace) -> Vec<DocumentSymbol> {
-    ws.flags()
+pub fn flag_file_symbols(flags: &FlagTable) -> Vec<DocumentSymbol> {
+    flags
         .defs
         .iter()
         .map(|d| DocumentSymbol {

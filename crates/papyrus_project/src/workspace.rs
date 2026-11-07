@@ -6,20 +6,26 @@
 //! members = ["Requiem", "mods/*"]   # directories with a papyrus.toml; `*` = every subdirectory
 //! exclude = ["mods/old"]
 //!
-//! [workspace.var]                   # variables of every member
-//! [workspace.compiler]              # defaults of `[compiler]`
-//! [workspace.build]                 # defaults of `[build]`: imports (added after the member's), flags, ...
-//! [workspace.lints]                 # for the `[lints]` with `workspace = true`
-//! [workspace.format]                # for the `[format]` with `workspace = true`
+//! [workspace.var]
+//! [workspace.compiler]              # path, args
+//! [workspace.build]                 # imports, flags, optimize, release, final, quiet
+//! [workspace.lints]
+//! [workspace.format]
 //! ```
 //!
-//! Like in `Cargo.toml`, a member chooses to use these two tables, and then sets
-//! nothing else in its own: the rest is an error, as `false` is, and as having
-//! nothing to inherit is.
+//! Like in `Cargo.toml`, nothing applies by itself: a member asks for each value,
+//! and for `lints` and `format` as a whole. Its own values replace the ones of the
+//! workspace. `false` is an error, and so is having nothing to inherit.
 //!
 //! ```toml
+//! [var]
+//! SKYRIM_DIR.workspace = true
+//!
+//! [build]
+//! imports.workspace = true
+//!
 //! [lints]
-//! workspace = true
+//! workspace = true                  # nothing else in this table
 //! ```
 //!
 //! A member lists the projects it uses in `[dependencies]`, by path:
@@ -46,8 +52,8 @@ use serde::Deserialize;
 use toml::Spanned;
 
 use crate::{
-    FormatSettings, MANIFEST_NAME, ManifestError, Project, RawCompiler, RawFormat, RawLocal,
-    Variables, format_settings, lint_settings_into, resolve_path,
+    FormatSettings, MANIFEST_NAME, ManifestError, Project, RawFormat, RawLocal, Variables,
+    format_settings, lint_settings_into, plain_vars, resolve_path,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -58,9 +64,9 @@ pub(crate) struct RawWorkspace {
     #[serde(default)]
     exclude: Vec<Spanned<String>>,
     #[serde(default)]
-    var: BTreeMap<String, String>,
+    pub(crate) var: BTreeMap<String, String>,
     #[serde(default)]
-    compiler: RawCompiler,
+    compiler: RawWorkspaceCompiler,
     #[serde(default)]
     build: RawWorkspaceBuild,
     pub(crate) lints: Option<BTreeMap<String, Spanned<toml::Value>>>,
@@ -69,9 +75,15 @@ pub(crate) struct RawWorkspace {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct RawWorkspaceCompiler {
+    path: Option<Spanned<String>>,
+    args: Option<Vec<String>>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawWorkspaceBuild {
-    #[serde(default)]
-    imports: Vec<Spanned<String>>,
+    imports: Option<Vec<Spanned<String>>>,
     flags: Option<Spanned<String>>,
     optimize: Option<bool>,
     release: Option<bool>,
@@ -86,18 +98,21 @@ pub(crate) struct RawDependency {
     pub(crate) path: Spanned<String>,
 }
 
-/// What members inherit from their workspace, resolved.
+/// What members may inherit from their workspace, resolved; `None` for what it
+/// does not define.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Inherited {
     /// The workspace manifest.
     pub(crate) manifest: PathBuf,
     /// `[workspace.var]` and `[var]` of the root, unexpanded.
     pub(crate) var: BTreeMap<String, String>,
+    /// The names of `[workspace.var]`: what members may ask for.
+    pub(crate) workspace_var: Vec<String>,
     /// `[var]` of the `papyrus.local.toml` of the root.
     pub(crate) local: BTreeMap<String, String>,
     pub(crate) compiler: Option<PathBuf>,
-    pub(crate) args: Vec<String>,
-    pub(crate) imports: Vec<PathBuf>,
+    pub(crate) args: Option<Vec<String>>,
+    pub(crate) imports: Option<Vec<PathBuf>>,
     pub(crate) flags: Option<PathBuf>,
     pub(crate) optimize: Option<bool>,
     pub(crate) release: Option<bool>,
@@ -120,7 +135,7 @@ pub struct ProjectWorkspace {
 }
 
 impl ProjectWorkspace {
-    /// The member whose sources contain `path`, the innermost one.
+    /// The member whose sources or tests contain `path`, the innermost one.
     pub fn member_for(&self, path: &Path) -> Option<&Project> {
         self.members
             .iter()
@@ -128,6 +143,7 @@ impl ProjectWorkspace {
                 let depth = p
                     .sources
                     .iter()
+                    .chain(&p.test_sources)
                     .filter(|s| path.starts_with(s))
                     .map(|s| s.components().count())
                     .max()?;
@@ -167,16 +183,12 @@ pub fn load_workspace_with(
     let text = read(&root)?;
     let raw: crate::RawManifest = toml::from_str(&text)
         .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span()).in_file(&root)])?;
+    let asking = raw.inherited_settings();
     let Some(ws) = raw.workspace else {
-        // Asking for the tables of a workspace, without any.
-        let asking = [
-            crate::lints_inherit(&raw.lints).then_some("lints"),
-            raw.format.inherits().then_some("format"),
-        ];
+        // Asking for the values of a workspace, without any.
         let errors: Vec<ManifestError> = asking
-            .into_iter()
-            .flatten()
-            .map(|table| crate::cannot_inherit(table, crate::NO_WORKSPACE).in_file(&root))
+            .iter()
+            .map(|setting| crate::cannot_inherit(setting, crate::NO_WORKSPACE).in_file(&root))
             .collect();
         if !errors.is_empty() {
             return Err(errors);
@@ -187,7 +199,7 @@ pub fn load_workspace_with(
     };
 
     let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();
-    let inherited = inherited(&root, &dir, &ws, &raw.var, read_local(&root), vars)?;
+    let inherited = inherited(&root, &dir, &ws, &plain_vars(&raw.var), read_local(&root), vars)?;
     let mut members = Vec::new();
     // The root is a project too when it says so.
     let table: toml::Table = text.parse().unwrap_or_default();
@@ -272,17 +284,16 @@ fn inherited(
     vars.manifest = var.clone();
     vars.local = local.clone();
     let mut errors = Vec::new();
-    let args = ws
-        .compiler
-        .args
-        .iter()
-        .map(|a| {
-            vars.expand(a, &mut BTreeMap::new()).unwrap_or_else(|message| {
-                errors.push(ManifestError::new(message, None));
-                String::new()
+    let args = ws.compiler.args.as_ref().map(|args| {
+        args.iter()
+            .map(|a| {
+                vars.expand(a, &mut BTreeMap::new()).unwrap_or_else(|message| {
+                    errors.push(ManifestError::new(message, None));
+                    String::new()
+                })
             })
-        })
-        .collect();
+            .collect()
+    });
     let mut path = |value: &Spanned<String>| {
         let span = Some(value.span()).filter(|r| !r.is_empty());
         match vars.expand(value.get_ref(), &mut BTreeMap::new()) {
@@ -294,7 +305,8 @@ fn inherited(
         }
     };
     let compiler = ws.compiler.path.as_ref().and_then(&mut path);
-    let imports: Vec<PathBuf> = ws.build.imports.iter().filter_map(&mut path).collect();
+    let imports: Option<Vec<PathBuf>> =
+        ws.build.imports.as_ref().map(|list| list.iter().filter_map(&mut path).collect());
     let flags = ws.build.flags.as_ref().and_then(&mut path);
     let asks_itself = ws.lints.as_ref().is_some_and(|l| l.contains_key("workspace"))
         || ws.format.as_ref().is_some_and(|f| f.workspace.is_some());
@@ -316,6 +328,7 @@ fn inherited(
     Ok(Inherited {
         manifest: root.to_path_buf(),
         var,
+        workspace_var: ws.var.keys().cloned().collect(),
         local,
         compiler,
         args,
@@ -338,6 +351,17 @@ impl Inherited {
         vars.manifest = self.var.clone();
         vars.local = self.local.clone();
         vars
+    }
+
+    /// The value of `name` for `name.workspace = true` of a member, expanded with
+    /// the variables of the root, which the member does not see.
+    pub(crate) fn var_value(&self, name: &str, vars: &Variables) -> Result<String, ManifestError> {
+        if !self.workspace_var.iter().any(|v| v == name) {
+            return Err(crate::not_defined(&format!("var.{name}")));
+        }
+        self.vars(vars)
+            .expand(&format!("${{{name}}}"), &mut BTreeMap::new())
+            .map_err(|message| ManifestError::new(message, None).in_file(&self.manifest))
     }
 }
 
@@ -379,7 +403,7 @@ pub fn find_workspace_root(manifest_path: &Path, vars: &Variables) -> Option<Pat
         let Ok(text) = std::fs::read_to_string(&candidate) else { continue };
         let Ok(raw) = toml::from_str::<crate::RawManifest>(&text) else { continue };
         let Some(ws) = raw.workspace else { continue };
-        let mut var = raw.var;
+        let mut var = plain_vars(&raw.var);
         var.extend(ws.var);
         let local = crate::read_local(&candidate)
             .and_then(|t| toml::from_str::<RawLocal>(&t).ok())
@@ -413,6 +437,24 @@ pub(crate) fn workspace_of(manifest_path: &Path) -> Option<(PathBuf, RawWorkspac
     Some((root, raw.workspace?))
 }
 
+/// Loads the project of `manifest_path` without the other ones of its workspace.
+fn load_alone(manifest_path: &Path, vars: &Variables) -> Result<Project, Vec<ManifestError>> {
+    let root_text = find_workspace_root(manifest_path, vars)
+        .and_then(|root| Some((std::fs::read_to_string(&root).ok()?, root)));
+    let Some((root_text, root)) = root_text else { return crate::load(manifest_path, vars) };
+    let raw: crate::RawManifest = toml::from_str(&root_text)
+        .map_err(|e| vec![ManifestError::new(e.message().to_owned(), e.span()).in_file(&root)])?;
+    let Some(ws) = raw.workspace else { return crate::load(manifest_path, vars) };
+    let dir = root.parent().map(Path::to_path_buf).unwrap_or_default();
+    let local = crate::read_local(&root);
+    let inherited = inherited(&root, &dir, &ws, &plain_vars(&raw.var), local, vars)?;
+    let text = std::fs::read_to_string(manifest_path).map_err(|e| {
+        vec![ManifestError::new(format!("cannot read {}: {e}", manifest_path.display()), None)]
+    })?;
+    let local = crate::read_local(manifest_path);
+    crate::parse_with(manifest_path, &text, local.as_deref(), vars, Some(&inherited))
+}
+
 /// Fills `dependency_sources` from `[dependencies]`: the sources of the
 /// dependencies, transitively. A dependency is a member of the workspace, or
 /// any directory with a manifest.
@@ -441,8 +483,8 @@ fn resolve_dependencies(
             }
             seen.push(dep.clone());
             if !known.contains_key(&dep) {
-                // Not a member: its manifest alone.
-                match crate::load(&dep.join(MANIFEST_NAME), vars) {
+                // Not a member: its manifest alone, in its own workspace if any.
+                match load_alone(&dep.join(MANIFEST_NAME), vars) {
                     Ok(p) => {
                         let deps = p.dependencies.iter().map(|d| d.1.clone()).collect();
                         known.insert(dep.clone(), (p.sources, deps));

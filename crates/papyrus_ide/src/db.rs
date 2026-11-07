@@ -91,6 +91,8 @@ pub struct Scope {
     /// The directories its scripts see: its sources, the sources of its
     /// dependencies and its imports.
     pub visible: Vec<PathBuf>,
+    /// Its flags file; `None` for the one of [`Workspace::flags`].
+    pub flags: Option<PathBuf>,
 }
 
 /// [`Scope`] directories as [`path_key`]s ending with `/`.
@@ -98,6 +100,8 @@ pub struct Scope {
 struct ScopeKeys {
     sources: Vec<String>,
     visible: Vec<String>,
+    /// The index of its flags file in [`Workspace::flag_tables`].
+    flags: u16,
 }
 
 /// At most this many scopes restrict name resolution; files of the others
@@ -105,15 +109,30 @@ struct ScopeKeys {
 const MAX_SCOPES: usize = 64;
 
 /// All known files. Cheap to clone: indexes and trees are shared.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Workspace {
     files: Vec<Option<FileData>>,
     by_path: FxHashMap<String, FileId>,
     by_script: FxHashMap<Symbol, Vec<FileId>>,
-    flags: FlagTable,
+    /// The flags files: the first for the scripts of no scope with its own, then
+    /// those of the scopes.
+    flag_tables: Vec<FlagTable>,
     scopes: Vec<ScopeKeys>,
     /// The test directories, as [`path_key`]s ending with `/`.
     test_dirs: Vec<String>,
+}
+
+impl Default for Workspace {
+    fn default() -> Workspace {
+        Workspace {
+            files: Vec::new(),
+            by_path: FxHashMap::default(),
+            by_script: FxHashMap::default(),
+            flag_tables: vec![FlagTable::default()],
+            scopes: Vec::new(),
+            test_dirs: Vec::new(),
+        }
+    }
 }
 
 /// Normalizes a path into a lookup key. Windows paths are case-insensitive.
@@ -242,11 +261,17 @@ impl Workspace {
     /// Sets the projects of a multi-project workspace; empty for one project,
     /// whose scripts see every script.
     pub fn set_scopes(&mut self, scopes: &[Scope]) {
+        // Open flags files keep the text of the editor.
+        let old = std::mem::take(&mut self.flag_tables);
+        let mut old = old.into_iter();
+        self.flag_tables = vec![old.next().unwrap_or_default()];
+        let old: Vec<FlagTable> = old.collect();
         self.scopes = scopes
             .iter()
             .map(|s| ScopeKeys {
                 sources: s.sources.iter().map(|d| dir_key(d)).collect(),
                 visible: s.visible.iter().map(|d| dir_key(d)).collect(),
+                flags: s.flags.as_ref().map_or(0, |path| self.scope_flag_table(path, &old)),
             })
             .collect();
         let scopings: Vec<_> =
@@ -256,6 +281,26 @@ impl Workspace {
                 (file.scope, file.visible_in) = scoping;
             }
         }
+    }
+
+    /// The index of the table of the flags file `path`, kept from `old` or read.
+    /// Scopes sharing a file share a table, so that their flags are the same.
+    fn scope_flag_table(&mut self, path: &Path, old: &[FlagTable]) -> u16 {
+        let same =
+            |t: &&FlagTable| t.path.as_deref().is_some_and(|p| path_key(p) == path_key(path));
+        if let Some(i) = self.flag_tables.iter().position(|t| same(&t)) {
+            return i as u16;
+        }
+        let table = match old.iter().find(same) {
+            Some(table) => table.clone(),
+            None => match crate::read_file(path) {
+                Some(text) => FlagTable::parse(Some(path.to_path_buf()), Arc::from(text)),
+                // Reported on the manifest.
+                None => return 0,
+            },
+        };
+        self.flag_tables.push(table);
+        (self.flag_tables.len() - 1) as u16
     }
 
     /// Sets the test directories, whose files see the [`Origin::Builtin`]
@@ -387,40 +432,69 @@ impl Workspace {
         })
     }
 
-    /// The user flags (`Hidden`, `Conditional`, ...) of the flags file.
+    /// The user flags (`Hidden`, `Conditional`, ...) of the scripts of no scope
+    /// with a flags file.
     pub fn flags(&self) -> &FlagTable {
-        &self.flags
+        &self.flag_tables[0]
     }
 
-    /// Sets the flags file read from disk. Ignored while the current flags file
-    /// is open in the editor, unless `path` is another file.
+    /// The flags seen by the script of `file`.
+    pub fn flags_of(&self, file: FileId) -> &FlagTable {
+        self.flag_table(self.flag_table_of(file))
+    }
+
+    /// The index of the flags seen by the script of `file`.
+    pub fn flag_table_of(&self, file: FileId) -> u16 {
+        let scope = self.file(file).scope;
+        scope.and_then(|s| self.scopes.get(s as usize)).map_or(0, |s| s.flags)
+    }
+
+    /// The flags of an index of [`Workspace::flag_table_of`].
+    pub fn flag_table(&self, table: u16) -> &FlagTable {
+        self.flag_tables.get(table as usize).unwrap_or(&self.flag_tables[0])
+    }
+
+    /// Every flags file in use.
+    pub fn flag_tables(&self) -> impl Iterator<Item = (u16, &FlagTable)> {
+        self.flag_tables.iter().enumerate().map(|(i, t)| (i as u16, t))
+    }
+
+    /// The index of the flags of the file `path`.
+    pub fn flag_table_at(&self, path: &Path) -> Option<u16> {
+        let same = |t: &FlagTable| t.path.as_deref().is_some_and(|p| path_key(p) == path_key(path));
+        self.flag_tables.iter().position(same).map(|i| i as u16)
+    }
+
+    /// Sets the flags file of the scripts of no scope with one, read from disk.
+    /// Ignored while it is open in the editor, unless `path` is another file.
     pub fn set_flags_file(&mut self, path: PathBuf, text: Arc<str>) {
-        if self.flags.open
-            && self.flags.path.as_deref().is_some_and(|p| path_key(p) == path_key(&path))
-        {
+        let current = &self.flag_tables[0];
+        if current.open && current.path.as_deref().is_some_and(|p| path_key(p) == path_key(&path)) {
             return;
         }
-        self.flags = FlagTable::parse(Some(path), text);
+        self.flag_tables[0] = FlagTable::parse(Some(path), text);
     }
 
-    /// Sets the editor contents of the flags file.
+    /// Sets the editor contents of the flags file `path`: of the tables reading
+    /// it, or the first one.
     pub fn set_flags_open(&mut self, path: PathBuf, text: Arc<str>) {
-        self.flags = FlagTable::parse(Some(path), text);
-        self.flags.open = true;
+        let table = self.flag_table_at(&path).map_or(0, usize::from);
+        self.flag_tables[table] = FlagTable::parse(Some(path), text);
+        self.flag_tables[table].open = true;
     }
 
-    /// Marks the flags file as closed, re-reading it from disk.
-    pub fn close_flags(&mut self) {
-        let Some(path) = self.flags.path.clone() else { return };
-        self.flags = match crate::read_file(&path) {
-            Some(text) => FlagTable::parse(Some(path), Arc::from(text)),
+    /// The flags file `path` is closed or changed: re-reads it from disk.
+    pub fn reload_flags(&mut self, path: &Path) {
+        let Some(table) = self.flag_table_at(path) else { return };
+        self.flag_tables[table as usize] = match crate::read_file(path) {
+            Some(text) => FlagTable::parse(Some(path.to_path_buf()), Arc::from(text)),
             None => FlagTable::default(),
         };
     }
 
-    /// Returns `true` if `path` is the current flags file.
+    /// Returns `true` if `path` is a flags file in use.
     pub fn is_flags_file(&self, path: &Path) -> bool {
-        self.flags.path.as_deref().is_some_and(|p| path_key(p) == path_key(path))
+        self.flag_table_at(path).is_some()
     }
 
     /// The text of a file: the editor contents, or the file read from disk.

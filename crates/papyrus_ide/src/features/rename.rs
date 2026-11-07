@@ -111,7 +111,7 @@ fn check_renamable(sema: &Sema<'_>, def: Def) -> Result<(), String> {
         Def::Builtin(..) => return Err("built-in names cannot be renamed".to_owned()),
         Def::LanguageFlag(_) => return Err("keywords cannot be renamed".to_owned()),
         // The flags file belongs to the game or the compiler.
-        Def::Flag(_) => return Err("flags of the flags file cannot be renamed".to_owned()),
+        Def::Flag(..) => return Err("flags of the flags file cannot be renamed".to_owned()),
         _ => {}
     }
     // Only the scripts of the workspace may change: names declared by
@@ -147,7 +147,7 @@ fn declaring_file(def: Def) -> Option<FileId> {
         | Def::Member { file, .. }
         | Def::Param { file, .. }
         | Def::Script { file } => Some(file),
-        Def::Builtin(..) | Def::Flag(_) | Def::LanguageFlag(_) => None,
+        Def::Builtin(..) | Def::Flag(..) | Def::LanguageFlag(_) => None,
     }
 }
 /// `def` and, for functions and events, the declarations it overrides and

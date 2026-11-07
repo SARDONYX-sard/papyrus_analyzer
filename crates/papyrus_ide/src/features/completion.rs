@@ -19,7 +19,7 @@ use papyrus_parser::{
 use super::{in_body, member_kind_label, with_sema};
 use crate::{
     FileId, Workspace,
-    flags::FlagTargets,
+    flags::{FlagTable, FlagTargets},
     index::{Member, MemberKind, render_param},
     sema::{FileSource, LocalKind, MemberItem, Sema, Ty},
 };
@@ -489,7 +489,7 @@ impl<'s, 'a> Ctx<'s, 'a> {
             item.documentation = Some(docs.to_owned());
         }
 
-        let table = self.sema.ws.flags();
+        let table = self.sema.ws.flags_of(self.sema.file);
         let source = table.source_name();
         for def in table.defs.iter().filter(|d| d.targets.intersects(target)) {
             if is_present(def.name.as_str()) {
@@ -582,8 +582,7 @@ fn escape_snippet(s: &str) -> String {
 
 /// Completion in the flags file: `Flag` definitions at the top level and the
 /// targets (`Script`, `Property`, `Variable`, `Function`) inside `{ }`.
-pub fn flag_file_completions(ws: &Workspace, offset: TextSize) -> Completions {
-    let flags = ws.flags();
+pub fn flag_file_completions(flags: &FlagTable, offset: TextSize) -> Completions {
     let text: &str = &flags.text;
     let offset = usize::from(offset).min(text.len());
     let before = &text[..offset];

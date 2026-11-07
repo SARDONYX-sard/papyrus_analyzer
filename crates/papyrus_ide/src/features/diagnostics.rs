@@ -18,7 +18,7 @@ use rustc_hash::FxHashMap;
 use super::in_body;
 use crate::{
     FileId, Workspace,
-    flags::FlagTargets,
+    flags::{FlagTable, FlagTargets},
     index::MemberKind,
     sema::{Builtin, FileSource, Sema, Ty},
 };
@@ -181,8 +181,8 @@ pub fn diagnostics_of(
     out
 }
 /// Diagnostics of the flags file.
-pub fn flag_file_diagnostics(ws: &Workspace) -> Vec<Diagnostic> {
-    ws.flags()
+pub fn flag_file_diagnostics(flags: &FlagTable) -> Vec<Diagnostic> {
+    flags
         .errors
         .iter()
         .map(|e| Diagnostic::error(e.range, "flags-syntax", e.message.clone()))
@@ -460,7 +460,7 @@ fn check_locals(
     }
 }
 fn check_flags(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {
-    let table = sema.ws.flags();
+    let table = sema.ws.flags_of(sema.file);
     for node in sema.root.descendants() {
         let Some(flag) = ast::Flag::cast(node) else { continue };
         let (Some(tok), Some(decl)) = (flag.token(), node.parent()) else { continue };

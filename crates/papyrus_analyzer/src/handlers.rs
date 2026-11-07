@@ -53,22 +53,24 @@ impl Server {
     ) -> Option<Location> {
         match file {
             NavFile::Script(file) => self.location(file, range, cache),
-            NavFile::Flags => Some(Location {
-                uri: crate::conv::path_to_uri(self.ws.flags().path.as_ref()?),
-                range: Lines::flags(&self.ws).range(range),
-            }),
+            NavFile::Flags(table) => {
+                let flags = self.ws.flag_table(table);
+                Some(Location {
+                    uri: crate::conv::path_to_uri(flags.path.as_ref()?),
+                    range: Lines::flags(flags).range(range),
+                })
+            }
         }
     }
 
-    /// The offset of a position in the active flags file, if `uri` is it.
-    fn flags_position(&self, pos: &TextDocumentPositionParams) -> Option<(Lines, TextSize)> {
+    /// The offset of a position in a flags file in use, if `uri` is one, with the
+    /// index of its table.
+    fn flags_position(&self, pos: &TextDocumentPositionParams) -> Option<(u16, Lines, TextSize)> {
         let path = crate::conv::uri_to_path(&pos.text_document.uri)?;
-        if !self.ws.is_flags_file(&path) {
-            return None;
-        }
-        let lines = Lines::flags(&self.ws);
+        let table = self.ws.flag_table_at(&path)?;
+        let lines = Lines::flags(self.ws.flag_table(table));
         let offset = lines.offset(pos.position);
-        Some((lines, offset))
+        Some((table, lines, offset))
     }
 
     pub(crate) fn hover(&mut self, params: HoverParams) -> Option<Hover> {
@@ -91,8 +93,10 @@ impl Server {
                 range: Some(lines.range(range)),
             });
         }
-        if let Some((lines, offset)) = self.flags_position(&params.text_document_position_params) {
-            let hover = papyrus_ide::flag_file_hover(&self.ws, offset)?;
+        if let Some((table, lines, offset)) =
+            self.flags_position(&params.text_document_position_params)
+        {
+            let hover = papyrus_ide::flag_file_hover(self.ws.flag_table(table), offset)?;
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
                     kind: MarkupKind::Markdown,
@@ -189,13 +193,14 @@ impl Server {
     pub(crate) fn references(&mut self, params: ReferenceParams) -> Option<Vec<Location>> {
         let include = params.context.include_declaration;
         let mut cache = FxHashMap::default();
-        let refs = if let Some((_, offset)) = self.flags_position(&params.text_document_position) {
-            papyrus_ide::flag_references(&self.ws, offset, include)
-        } else {
-            let (file, lines, offset) = self.position(&params.text_document_position)?;
-            cache.insert(file, lines);
-            papyrus_ide::references(&self.ws, file, offset, include)
-        };
+        let refs =
+            if let Some((table, _, offset)) = self.flags_position(&params.text_document_position) {
+                papyrus_ide::flag_references(&self.ws, table, offset, include)
+            } else {
+                let (file, lines, offset) = self.position(&params.text_document_position)?;
+                cache.insert(file, lines);
+                papyrus_ide::references(&self.ws, file, offset, include)
+            };
         Some(refs.into_iter().filter_map(|(f, r)| self.nav_location(f, r, &mut cache)).collect())
     }
 
@@ -221,46 +226,47 @@ impl Server {
     }
 
     pub(crate) fn completion(&mut self, params: CompletionParams) -> Option<CompletionResponse> {
-        let (lines, completions) =
-            if let Some((lines, offset)) = self.flags_position(&params.text_document_position) {
-                (lines, papyrus_ide::flag_file_completions(&self.ws, offset))
-            } else {
-                let (file, lines, offset) = self.position(&params.text_document_position)?;
-                // Inside a `; #[allow(...)]` comment: the lints.
-                if let Some((range, items)) =
-                    papyrus_lint::ignore::attribute_completions(&self.ws, file, offset)
-                {
-                    let items = items
-                        .into_iter()
-                        .map(|(label, detail)| CompletionItem {
-                            kind: Some(lsp_types::CompletionItemKind::KEYWORD),
-                            detail: Some(detail),
-                            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                                range: lines.range(range),
-                                new_text: label.clone(),
-                            })),
-                            label,
-                            ..Default::default()
-                        })
-                        .collect();
-                    return Some(CompletionResponse::List(CompletionList {
-                        is_incomplete: false,
-                        items,
-                    }));
-                }
-                // These only trigger completion for attributes, not in code.
-                let trigger = params.context.as_ref().and_then(|c| c.trigger_character.as_deref());
-                if matches!(trigger, Some("[" | "(" | ",")) {
-                    return None;
-                }
-                let mut completions = papyrus_ide::completions(&self.ws, file, offset);
-                // A quote only opens the states of `GoToState("`: it also ends
-                // strings, where the code would be proposed.
-                if trigger == Some("\"") {
-                    completions.items.retain(|i| i.kind == papyrus_ide::CompletionKind::State);
-                }
-                (lines, completions)
-            };
+        let (lines, completions) = if let Some((table, lines, offset)) =
+            self.flags_position(&params.text_document_position)
+        {
+            (lines, papyrus_ide::flag_file_completions(self.ws.flag_table(table), offset))
+        } else {
+            let (file, lines, offset) = self.position(&params.text_document_position)?;
+            // Inside a `; #[allow(...)]` comment: the lints.
+            if let Some((range, items)) =
+                papyrus_lint::ignore::attribute_completions(&self.ws, file, offset)
+            {
+                let items = items
+                    .into_iter()
+                    .map(|(label, detail)| CompletionItem {
+                        kind: Some(lsp_types::CompletionItemKind::KEYWORD),
+                        detail: Some(detail),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range: lines.range(range),
+                            new_text: label.clone(),
+                        })),
+                        label,
+                        ..Default::default()
+                    })
+                    .collect();
+                return Some(CompletionResponse::List(CompletionList {
+                    is_incomplete: false,
+                    items,
+                }));
+            }
+            // These only trigger completion for attributes, not in code.
+            let trigger = params.context.as_ref().and_then(|c| c.trigger_character.as_deref());
+            if matches!(trigger, Some("[" | "(" | ",")) {
+                return None;
+            }
+            let mut completions = papyrus_ide::completions(&self.ws, file, offset);
+            // A quote only opens the states of `GoToState("`: it also ends
+            // strings, where the code would be proposed.
+            if trigger == Some("\"") {
+                completions.items.retain(|i| i.kind == papyrus_ide::CompletionKind::State);
+            }
+            (lines, completions)
+        };
         let snippets = self
             .caps
             .text_document
@@ -350,11 +356,12 @@ impl Server {
         &mut self,
         params: DocumentSymbolParams,
     ) -> Option<DocumentSymbolResponse> {
-        if crate::conv::uri_to_path(&params.text_document.uri)
-            .is_some_and(|p| self.ws.is_flags_file(&p))
+        if let Some(table) = crate::conv::uri_to_path(&params.text_document.uri)
+            .and_then(|p| self.ws.flag_table_at(&p))
         {
-            let lines = Lines::flags(&self.ws);
-            let symbols = papyrus_ide::flag_file_symbols(&self.ws);
+            let flags = self.ws.flag_table(table);
+            let lines = Lines::flags(flags);
+            let symbols = papyrus_ide::flag_file_symbols(flags);
             return Some(DocumentSymbolResponse::Nested(
                 symbols.into_iter().map(|s| document_symbol(&lines, s)).collect(),
             ));
@@ -773,7 +780,7 @@ impl Server {
             .iter()
             .filter_map(|(nav, _)| match nav {
                 papyrus_ide::NavFile::Script(f) => Some(self.ws.file(*f).path.clone()),
-                papyrus_ide::NavFile::Flags => self.ws.flags().path.clone(),
+                papyrus_ide::NavFile::Flags(table) => self.ws.flag_table(*table).path.clone(),
             })
             .chain(edit.file_renames.iter().map(|(f, _)| self.ws.file(*f).path.clone()));
         for path in paths {

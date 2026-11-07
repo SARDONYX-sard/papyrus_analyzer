@@ -101,7 +101,7 @@ pub(crate) fn assemble(
         a.cx.temps
     );
 
-    let flags = sema.ws.flags();
+    let flags = sema.ws.flags_of(sema.file);
     let user_flags_table = flags
         .defs
         .iter()
@@ -185,7 +185,7 @@ impl Assembler<'_, '_> {
         flags: impl Iterator<Item = ast::Flag<'f>>,
         target: FlagTargets,
     ) -> u32 {
-        let table = self.cx.sema.ws.flags();
+        let table = self.cx.sema.ws.flags_of(self.cx.sema.file);
         let mut bits = 0;
         for flag in flags {
             if let Some((_, def)) = table.get(flag.text())
@@ -330,7 +330,7 @@ impl Assembler<'_, '_> {
             let var = property_auto_var_name(&name);
             // Flags only allowed on variables (`Conditional`) go to the
             // hidden variable.
-            let table = self.cx.sema.ws.flags();
+            let table = self.cx.sema.ws.flags_of(self.cx.sema.file);
             let var_flags = prop
                 .flags()
                 .filter_map(|f| table.get(f.text()))

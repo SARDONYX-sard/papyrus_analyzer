@@ -7,7 +7,7 @@ use super::{
     keyword_docs::{flag_file_keyword_doc, keyword_doc},
     with_sema,
 };
-use crate::{FileId, Workspace, sema::Sema};
+use crate::{FileId, Workspace, flags::FlagTable, sema::Sema};
 
 /// The result of [`hover`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,8 +338,7 @@ fn location_link(sema: &Sema<'_>, range: TextRange) -> String {
 
 /// Describes the flag definition at `offset` in the flags file, or the
 /// keyword (`Flag`, `Script`, ...) there.
-pub fn flag_file_hover(ws: &Workspace, offset: TextSize) -> Option<HoverResult> {
-    let flags = ws.flags();
+pub fn flag_file_hover(flags: &FlagTable, offset: TextSize) -> Option<HoverResult> {
     let Some(i) = flags.def_at(offset) else {
         let text: &str = &flags.text;
         let at = usize::from(offset).min(text.len());
