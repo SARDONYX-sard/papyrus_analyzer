@@ -661,7 +661,30 @@ pub fn render_docs(text: &str, ranges: &[TextRange]) -> String {
             out.push('\n');
         }
     }
-    out.trim().to_owned()
+    keep_line_breaks(out.trim())
+}
+
+/// Markdown joins the lines of a paragraph, which most comments of scripts do
+/// not expect: `a\nb` becomes `a  \nb`, a line break. Not in code blocks, where
+/// lines are kept and spaces would be text.
+fn keep_line_breaks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_code = false;
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        out.push_str(line);
+        let Some(next) = lines.peek() else { break };
+        let fence = line.trim_start().starts_with("```");
+        if fence {
+            in_code = !in_code;
+        }
+        let next_fence = next.trim_start().starts_with("```");
+        if !in_code && !fence && !next_fence && !line.is_empty() && !next.trim().is_empty() {
+            out.push_str("  ");
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -702,7 +725,7 @@ mod tests {
         let (idx, text) = index(src);
         assert_eq!(
             render_docs(&text, &idx.members[0].docs),
-            "Adds numbers.\nReally.\nOfficial docs"
+            "Adds numbers.  \nReally.  \nOfficial docs"
         );
         assert_eq!(render_docs(&text, &idx.members[1].docs), "");
     }
@@ -711,6 +734,18 @@ mod tests {
     fn block_comment_docs() {
         let src = ";/ script docs\n   second line /;\nScriptName Foo\n";
         let (idx, text) = index(src);
-        assert_eq!(render_docs(&text, &idx.docs), "script docs\nsecond line");
+        assert_eq!(render_docs(&text, &idx.docs), "script docs  \nsecond line");
+    }
+
+    #[test]
+    fn docs_keep_their_line_breaks() {
+        // Paragraphs, lists and code blocks as written; no space before a blank
+        // line, at the end, or next to a fence.
+        let src = "ScriptName Foo\n{first\nsecond\n\n- a\n- b\ntext\n```\ncode\nmore\n```\nlast}\n";
+        let (idx, text) = index(src);
+        assert_eq!(
+            render_docs(&text, &idx.docs),
+            "first  \nsecond\n\n- a  \n- b  \ntext\n```\ncode\nmore\n```\nlast"
+        );
     }
 }
