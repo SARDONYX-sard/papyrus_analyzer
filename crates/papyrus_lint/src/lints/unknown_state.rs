@@ -17,9 +17,8 @@
 //!
 //! The states of the script, of its parents and of the known scripts extending
 //! it count; `""` is the empty state. A name both set with `GoToState` and
-//! compared with `GetState()` in the file is a flag, on purpose, unless it is
-//! close to a declared state: a typo copied. Only string literals are checked,
-//! and only when every parent of the script is known.
+//! compared with `GetState()` in the file is a flag, on purpose. Only string
+//! literals are checked, and only when every parent of the script is known.
 //!
 //! Fix: the closest names. It changes what the code does, so `lint --fix`
 //! leaves the choice to the author, unless `--allow-manual-fixes` is passed and
@@ -50,8 +49,7 @@ fn is_unknown(sema: &Sema<'_>, state: &StateRef<'_>) -> bool {
     !state.name.is_empty()
         && sema.chain_is_complete(state.script)
         && !is_declared(sema, state.script, state.name)
-        // Close to a declared state, it is a typo even if copied to both.
-        && (!is_flag(sema, state) || !closest(sema, state).is_empty())
+        && !is_flag(sema, state)
 }
 
 /// Whether the file uses the name of `state` the other way too, setting it
@@ -139,17 +137,11 @@ mod tests {
     }
 
     #[test]
-    fn a_typo_copied_to_both_is_no_flag() {
+    fn a_flag_may_be_close_to_a_state() {
         let src = format!(
             "{DECLS}Function F()\n    GoToState(\"Bussy\")\n    If GetState() == \"Bussy\"\n    EndIf\nEndFunction\n"
         );
-        assert_eq!(
-            check("unknown-state", &src),
-            [
-                "7: no state `Bussy` in `T`: did you mean `Busy`?",
-                "8: no state `Bussy` in `T`: did you mean `Busy`?",
-            ]
-        );
+        assert_eq!(check("unknown-state", &src), [""; 0]);
     }
 
     #[test]

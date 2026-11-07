@@ -184,14 +184,17 @@ fn callback_decl(sema: &Sema<'_>, callback: &ModEventRef<'_>) -> Option<Callback
         return own;
     }
     sema.ws
-        .all_scripts()
-        .filter(|&(other, file)| {
-            other != script
-                && sema.ws.file(file).index.mentions(name)
-                && sema.chain(other).any(|(_, i)| i.name == Some(script))
+        .files()
+        .filter(|(file, data)| {
+            data.index.mentions(name)
+                && data.index.name.is_some_and(|other| {
+                    other != script
+                        && sema.ws.script(other) == Some(*file)
+                        && sema.chain(other).any(|(_, i)| i.name == Some(script))
+                })
         })
-        .find_map(|(_, file)| {
-            let i = sema.ws.file(file).index.find(name, |m| m.is_callable())?;
+        .find_map(|(file, data)| {
+            let i = data.index.find(name, |m| m.is_callable())?;
             Some(CallbackDecl { name, file, index: i as u32, distance: 2 })
         })
 }

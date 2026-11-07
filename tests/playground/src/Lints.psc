@@ -37,7 +37,7 @@ Function UnknownState()
     If GetState() == "Ready"
         Debug.Trace("ready")
     EndIf
-    If GetState() == "Waitng" ; warning too; `"Waiting"` below: hover, references, rename
+    If GetState() == "Wating" ; warning too; `"Waiting"` below: hover, references, rename
         Debug.Trace("waiting")
     ElseIf GetState() == "Waiting"
         Debug.Trace("waiting")

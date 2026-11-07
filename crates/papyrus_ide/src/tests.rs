@@ -981,6 +981,36 @@ EndFunction
     );
 }
 
+#[test]
+fn references_of_a_member_in_scripts_that_can_name_it() {
+    let base = "ScriptName Base\nEvent $0OnThing()\nEndEvent\n";
+    let (mut ws, file, offset) = workspace(&[("Base.psc", base)]);
+    let mut add = |name: &str, text: &str| {
+        ws.set_open(PathBuf::from(format!("/ws/{name}.psc")), Arc::from(text), 0);
+    };
+    add("Plain", "ScriptName Plain extends Base\nFunction F()\n    OnThing()\nEndFunction\n");
+    add("Deep", "ScriptName Deep extends Plain\nFunction F()\n    OnThing()\nEndFunction\n");
+    add("Dotted", "ScriptName Dotted\nFunction F(Base o)\n    o.OnThing()\nEndFunction\n");
+    add("Spaced", "ScriptName Spaced\nFunction F(Base o)\n    o . OnThing()\nEndFunction\n");
+    add(
+        "Split",
+        "ScriptName Split\nFunction F(Base o)\n    o.\\\n    OnThing()\nEndFunction\n",
+    );
+    // The same name, of another script.
+    add("Other", "ScriptName Other\nEvent OnThing()\nEndEvent\nFunction F()\n    OnThing()\nEndFunction\n");
+
+    let found = references(&ws, file, offset, false);
+    let mut names: Vec<&str> = found
+        .iter()
+        .map(|(f, _)| {
+            let NavFile::Script(f) = f else { panic!("not a script") };
+            ws.file(*f).index.name_str()
+        })
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["Deep", "Dotted", "Plain", "Spaced", "Split"]);
+}
+
 const FORM_WITH_MOD_EVENTS: &str = "ScriptName Form Hidden\nFunction RegisterForModEvent(String eventName, String callbackName) Native\nFunction SendModEvent(String eventName, String strArg = \"\", Float numArg = 0.0) Native\nEvent OnActivate()\nEndEvent\n";
 
 /// A script extending `Form`, with `$0` in `body`, and a script sending events.

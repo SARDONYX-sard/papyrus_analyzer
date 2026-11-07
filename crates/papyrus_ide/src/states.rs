@@ -152,14 +152,49 @@ pub fn candidates(sema: &Sema<'_>, state: &StateRef<'_>) -> Vec<StateDecl> {
     sema.chain(state.script).flat_map(|(file, index)| states_of(file, index, false)).collect()
 }
 
+/// The declarations of the state named by the string `state`, like
+/// [`candidates`] of that name. Go to definition and hover ask this: of all the
+/// known scripts, only those mentioning the name are looked at.
+pub(crate) fn candidates_named(sema: &Sema<'_>, state: &StateRef<'_>) -> Vec<StateDecl> {
+    let name = Name::new(state.name);
+    let named = |file: FileId, index: &ScriptIndex, in_child: bool| {
+        states_of(file, index, in_child).filter(|d| d.name == name).collect::<Vec<_>>()
+    };
+    let mut out: Vec<StateDecl> =
+        sema.chain(state.script).flat_map(|(file, index)| named(file, index, false)).collect();
+    if state.on_self {
+        for (file, data) in sema.ws.files() {
+            let index = &data.index;
+            if index.mentions(name)
+                && index.find(name, |m| m.kind == MemberKind::State).is_some()
+                && index.name.is_some_and(|other| {
+                    other != state.script
+                        && sema.ws.script(other) == Some(file)
+                        && sema.chain(other).any(|(_, i)| i.name == Some(state.script))
+                })
+            {
+                out.extend(named(file, index, true));
+            }
+        }
+    }
+    out
+}
+
 /// The declaration of the state named by the string at `offset`, the nearest
 /// one up the `extends` chain, with the range of the name.
 pub(crate) fn state_def_at(sema: &Sema<'_>, offset: TextSize) -> Option<(TextRange, Def)> {
     let state = state_ref_at(sema, offset)?;
-    let decl = candidates(sema, &state)
-        .into_iter()
-        .find(|d| d.name.as_str().eq_ignore_ascii_case(state.name))?;
-    Some((state.name_range, Def::Member { file: decl.file, index: decl.index }))
+    // Up the chain first: most strings name a state of the script or a parent.
+    let name = Name::new(state.name);
+    let own = sema.chain(state.script).find_map(|(file, index)| {
+        let i = index.find(name, |m| m.kind == MemberKind::State)?;
+        Some(Def::Member { file, index: i as u32 })
+    });
+    let def = own.or_else(|| {
+        let decl = candidates_named(sema, &state).into_iter().next()?;
+        Some(Def::Member { file: decl.file, index: decl.index })
+    })?;
+    Some((state.name_range, def))
 }
 
 /// Whether the string `state`, of the same name, names the state declared by

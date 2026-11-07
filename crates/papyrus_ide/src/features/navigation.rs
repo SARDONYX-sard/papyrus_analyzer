@@ -41,9 +41,8 @@ pub fn goto_definition(ws: &Workspace, file: FileId, offset: TextSize) -> Vec<Na
     with_sema(ws, file, |sema| {
         // `GoToState("Busy")`: the states of that name.
         if let Some(state) = crate::states::state_ref_at(sema, offset) {
-            return crate::states::candidates(sema, &state)
+            return crate::states::candidates_named(sema, &state)
                 .into_iter()
-                .filter(|d| d.name.as_str().eq_ignore_ascii_case(state.name))
                 .filter_map(|d| def_location(sema, Def::Member { file: d.file, index: d.index }))
                 .map(|(file, focus_range, full_range)| NavTarget { file, focus_range, full_range })
                 .collect();
@@ -218,6 +217,8 @@ pub(crate) fn find_references(
     }
 
     let needle = name.as_str().to_ascii_lowercase();
+    // Common names (`OnUpdate`) are in thousands of files: these must not be parsed.
+    let declaring = reached_through_extends(ws, def);
     // Only the files whose index has the name: the others are not read.
     let files: Vec<FileId> =
         ws.files().filter(|(_, f)| f.index.mentions(name)).map(|(id, _)| id).collect();
@@ -233,8 +234,14 @@ pub(crate) fn find_references(
                 s.spawn(move || {
                     let mut found = Vec::new();
                     for &f in chunk {
+                        let plain_name_resolves =
+                            declaring.is_none_or(|script| extends_or_is(ws, f, script));
                         let Some(src) = FileSource::load_if(ws, f, |text| {
-                            contains_ignore_ascii_case(text, needle)
+                            if plain_name_resolves {
+                                contains_ignore_ascii_case(text, needle)
+                            } else {
+                                has_qualified_name(text, needle)
+                            }
                         }) else {
                             continue;
                         };
@@ -262,6 +269,51 @@ pub(crate) fn find_references(
     out.dedup();
     out
 }
+/// The script declaring `def`, when only it and the scripts extending it can
+/// name `def` without receiver: the members, except global functions, which
+/// `Import` brings to any script.
+fn reached_through_extends(ws: &Workspace, def: Def) -> Option<FileId> {
+    let Def::Member { file, index } = def else { return None };
+    let member = &ws.file(file).index.members[index as usize];
+    (member.kind != MemberKind::Function || !member.is_global()).then_some(file)
+}
+
+/// Whether the script of `file` is the one of `script`, or extends it.
+fn extends_or_is(ws: &Workspace, file: FileId, script: FileId) -> bool {
+    let mut current = file;
+    // A cycle of `extends` ends here too.
+    for _ in 0..64 {
+        if current == script {
+            return true;
+        }
+        let Some(next) = ws.file(current).index.extends.and_then(|p| ws.script_near(p, file))
+        else {
+            return false;
+        };
+        current = next;
+    }
+    false
+}
+
+/// Whether `text` has `needle_lower` after a `.` or a quote, what the scripts
+/// not extending the declaring one need to name it: `akOther.Name`, `"Name"`.
+fn has_qualified_name(text: &str, needle_lower: &str) -> bool {
+    let (bytes, n) = (text.as_bytes(), needle_lower.as_bytes());
+    if n.is_empty() || bytes.len() < n.len() {
+        return false;
+    }
+    (1..=bytes.len() - n.len()).any(|start| {
+        bytes[start..start + n.len()].iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b) && {
+            // `akOther . Name`, or `.` then `\` and a new line.
+            let before = bytes[..start]
+                .iter()
+                .rev()
+                .find(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'\\'));
+            matches!(before, Some(b'.' | b'"'))
+        }
+    })
+}
+
 fn is_declaration(ws: &Workspace, def: Def, file: FileId, range: TextRange) -> bool {
     match def {
         Def::Local { range: r, file: f, .. } => f == file && r == range,
