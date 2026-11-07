@@ -25,7 +25,7 @@ Language server:
 | Code actions | quick fixes (check None, allow a lint) · De Morgan · inline variable                                         |
 | Display      | semantic tokens · folding · symbols · formatting · `▶ Run Test` \| `⚙ Debug` code lenses                     |
 
-Imported scripts (game sources, `[build] imports`) are read only: never formatted, renamed or fixed. The fragments of the Creation Kit (`;BEGIN FRAGMENT CODE` to `;END FRAGMENT CODE`) are never formatted or changed by a code action or `lint --fix`.
+Never changed: imported scripts · Creation Kit fragments (`;BEGIN FRAGMENT CODE` … `;END FRAGMENT CODE`).
 
 ## Quick start
 
@@ -42,9 +42,13 @@ papyrus_analyzer help [COMMAND]                   # the options of a command (or
 papyrus_compiler MyQuest -i=Source -o=Scripts -f=TESV_Papyrus_Flags.flg   # PapyrusCompiler.exe compatible
 ```
 
-The [releases](https://github.com/SARDONYX-sard/papyrus_analyzer/releases) have `papyrus_analyzer` (zip on Windows, tar.gz on Linux and macOS) and the VS Code extension (`.vsix`).
+Download: [releases](https://github.com/SARDONYX-sard/papyrus_analyzer/releases) — `papyrus_analyzer` · VS Code extension (`.vsix`).
 
-VS Code (1.91+, also Cursor, Antigravity...): the **Papyrus** view of the activity bar shows `.psc` and `.pex` together and compiles | decompiles in one click. It shows up in workspaces with Papyrus only (a `papyrus.toml`, or `.psc` / `.pex` files once a script is open); `"papyrus.explorer.show": "always"` shows it everywhere. The extension starts with a `papyrus.toml` at the root or on opening a script: other repositories are not searched.
+## VS Code
+
+1.91+, also Cursor, Antigravity...
+
+**Papyrus** view: `.psc` and `.pex` together, compile | decompile in one click.
 
 ```mermaid
 flowchart LR
@@ -53,15 +57,19 @@ flowchart LR
     tree -- "click a file" --> open["open it"]
 ```
 
-Test scripts (`[test] sources`) are never compiled: their button runs their tests instead.
+| Command                          | Runs                  |
+| -------------------------------- | --------------------- |
+| `Papyrus: Format Project`        | `fmt` on the sources  |
+| `Papyrus: Lint Project`          | `lint` on the sources |
+| `Papyrus: Lint Project: Fix All` | `lint --fix`          |
 
-With a `papyrus.toml`: `Papyrus: Format Project` · `Papyrus: Lint Project` · `Papyrus: Lint Project: Fix All` run `fmt` / `lint` / `lint --fix` on all its `[build]` and `[test] sources`, in a terminal.
-
-Header rows: `Compiler:` built-in | `[compiler] path` · `Output:` the output directory of the mode (click → reveal). Title bar: _Compile Selected Scripts…_ (a quick pick), compile | decompile all, refresh, expand all.
+- Test scripts: ▶ runs their tests.
+- Starts on: a `papyrus.toml` at the root · opening a script.
+- `"papyrus.explorer.show": "always"`: the view in every workspace.
 
 ## `papyrus.toml`
 
-Optional. The two modes:
+Optional.
 
 |             | with `papyrus.toml`               | without ("limited")                                  |
 | ----------- | --------------------------------- | ---------------------------------------------------- |
@@ -71,7 +79,12 @@ Optional. The two modes:
 | Output      | `[build] output` (+ `/decompile`) | `build/papyrus/{compile,decompile}`                  |
 | Diagnostics | every source script               | open scripts only                                    |
 
-Each workspace folder has its own mode, and each `papyrus.toml` its own projects. Scripts of a folder with `papyrus.toml`, outside of `[build] sources` and `[test] sources`, are not of the project: known only while open, with the default settings.
+Per script, per workspace folder:
+
+| Script                              | Sees                 | Settings       |
+| ----------------------------------- | -------------------- | -------------- |
+| in `[build]` \| `[test] sources`    | its project only     | `papyrus.toml` |
+| anywhere else, or no `papyrus.toml` | every script (loose) | defaults       |
 
 ```toml
 "$schema" = "https://raw.githubusercontent.com/SARDONYX-sard/papyrus_analyzer/refs/tags/0.2.2/schemas/papyrus.schema.json"
@@ -89,13 +102,14 @@ imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]
 flags   = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"
 ```
 
-`$schema` documents and completes every setting in the editor: use [Tombi](https://github.com/tombi-toml/tombi) or [TOML Analyzer](https://github.com/Thoughts-with-friends/toml_analyzer). `Papyrus: Create papyrus.toml` writes a template, with the `$schema` of the version of the server.
+- Every setting: `$schema`, with [Tombi](https://github.com/tombi-toml/tombi) or [TOML Analyzer](https://github.com/Thoughts-with-friends/toml_analyzer).
+- Template: `Papyrus: Create papyrus.toml`.
 
 ### Variables
 
-Machine paths are `${NAME}` variables. Lookup order, first wins:
+`${NAME}`, first wins:
 
-`papyrus.var` setting | `--var NAME=VALUE` > `[var]` of `papyrus.local.toml` (not committed) > `[var]` of `papyrus.toml`
+`papyrus.var` setting | `--var NAME=VALUE` > `papyrus.local.toml` (not committed) > `papyrus.toml`
 
 | Built-in             | Value                                                                                                    |
 | -------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -106,7 +120,7 @@ Machine paths are `${NAME}` variables. Lookup order, first wins:
 
 ### Workspaces
 
-Several mods in one folder, like Cargo workspaces:
+Like Cargo workspaces:
 
 ```text
 my-mods/
@@ -146,7 +160,7 @@ imports.workspace = true
 workspace = true
 ```
 
-Like in `Cargo.toml`, nothing applies by itself: a member asks for what it wants.
+Nothing is inherited unless asked:
 
 | Workspace table                            | Member                                                 |
 | ------------------------------------------ | ------------------------------------------------------ |
@@ -154,11 +168,7 @@ Like in `Cargo.toml`, nothing applies by itself: a member asks for what it wants
 | `[workspace.lints]` · `[workspace.format]` | `workspace = true`, alone in the table                 |
 | `members` · `exclude`                      | may use `[var]` and `[workspace.var]` of the same file |
 
-- A member sees its sources + `[dependencies]` (transitively) + imports, nothing else — like the compiler:
-  - `MCM` in Requiem → `MCMHelper/…/MCM.psc` ✓
-  - sibling member, not a dependency → invisible (no false `name-is-type`) ✗
-- Opening a member folder → loads the whole workspace.
-- Each member → its own `output`, lints and format.
+A member sees: its sources + `[dependencies]` + its imports.
 
 ## Lints
 
@@ -181,11 +191,17 @@ papyrus_analyzer lint --list
 papyrus_analyzer lint -D warnings -A style --fix Scripts/Source
 ```
 
-Fixes that change what the code does need `--allow-manual-fixes`. With `--check-vcs`, `--fix` works like `cargo fix`: it refuses scripts with uncommitted changes and to run outside of a git repository, unless `--allow-dirty` · `--allow-staged` · `--allow-no-vcs` let it.
+| With `--fix`                                          |                                              |
+| ----------------------------------------------------- | -------------------------------------------- |
+| `--allow-manual-fixes`                                | also fixes that change what the code does    |
+| `--check-vcs`                                         | refuse uncommitted changes, like `cargo fix` |
+| `--allow-dirty` · `--allow-staged` · `--allow-no-vcs` | with `--check-vcs`: let them                 |
+
+Leave scripts out: `exclude = ["src/vendor"]` in `[lints]` | `[format]`.
 
 ### Attributes
 
-Rust-like attributes, in comments:
+In comments, before what they apply to:
 
 | Attribute                    | Applies to                                                                            |
 | ---------------------------- | ------------------------------------------------------------------------------------- |
@@ -196,10 +212,7 @@ Rust-like attributes, in comments:
 | `; #[test]`                  | the next function: a test, see [Tests](#tests)                                        |
 | `; #[mock(Script.Function)]` | the next function: replaces the native in the tests of its script                     |
 
-Attributes have completion, hover and go to definition (the mocked native); unknown ones are reported. Like in Rust, they go before what they apply to: after code on its line, or `#![...]` below the code, an attribute applies to nothing (`misplaced-attribute`, with a quick fix moving it).
-
-`names`: lints (`unused_local` | `unused-local`) · groups · `all`; none → every lint. Text after `]` (a reason) is ignored. Attributes stack, one per line: a long list can be split (`[format] max-width` does it).
-Quick fixes on a lint problem add them: _Allow `code` here_ · _Allow `code` in this file_.
+`names`: lints (`unused_local` | `unused-local`) · groups · `all`; none → every lint.
 
 ```papyrus
 ; #[allow(unused_local)]           ; the whole function
@@ -212,7 +225,7 @@ EndFunction
 
 ## Tests
 
-Unit tests of scripts, outside of the game: a VM runs the compiled code. A test script extends the script it tests, in `[test] sources`:
+Run outside of the game, in a VM. A test script extends the script it tests, in `[test] sources`:
 
 ```papyrus
 ScriptName MyQuestTests extends MyQuest
@@ -230,11 +243,12 @@ Actor Function FakePlayer()
 EndFunction
 ```
 
-- Each test runs on a new object, after its `OnInit`. It fails on a failed assertion, an error the game would log (a call on `None`, an index out of range...) or `Return False`.
-- `PapyrusAnalyzer`: `AssertIntEq` · `AssertFloatEq` · `AssertStringEq` · `AssertBoolEq` · `AssertTrue` · `AssertFalse` · `AssertNone` · `AssertNotNone` · `Fail`. A project script of the same name wins.
-- Natives: `Debug.Trace` prints, `Math` · `StringUtil` · `Utility.Random*` (seeded) work, the others return their default value and are listed. `#[mock]` replaces one; its signature is checked.
-- Events: `Utility.Wait` advances the clock and sends the `OnUpdate` (`RegisterForUpdate`...) that are due; other events are called like functions.
-- Objects as strings read like in the game: `"" + Self` → `[MyQuestTests < (FF000000)>]`, `None` → `None`.
+|          |                                                                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fails on | failed assertion · error the game would log (call on `None`...) · `Return False`                                                             |
+| Asserts  | `AssertIntEq` · `AssertFloatEq` · `AssertStringEq` · `AssertBoolEq` · `AssertTrue` · `AssertFalse` · `AssertNone` · `AssertNotNone` · `Fail` |
+| Natives  | work: `Debug.Trace` · `Math` · `StringUtil` · `Utility.Random*` — others: default value, or `#[mock]`                                        |
+| Events   | `Utility.Wait` sends the `OnUpdate` due — others: call them                                                                                  |
 
 ```sh
 papyrus_analyzer test                      # every test
@@ -242,9 +256,7 @@ papyrus_analyzer test tests/MyQuestTests.psc   # the tests of a file | folder
 papyrus_analyzer test kills                # the tests whose Script.Function contains it
 ```
 
-The report reads like `cargo test`: a line per test, the output (`Debug.Trace`) and the errors of the failures, then `test result: ok. 3 passed; 0 failed; 0 filtered out; finished in 1.38s` (`ok`/`FAILED` in color on a terminal, unless `NO_COLOR` is set). `papyrus_analyzer run Script.Function` (▶︎ Run Test) prints one test the same way, with its native calls.
-
-VS Code: `▶︎ Run Test` | `⚙︎ Debug` above each test. The debugger (`papyrus_analyzer debug`, launch type `papyrus`) has breakpoints, steps, the call stack, the variables (locals, `Self`) and watch expressions: Papyrus expressions without calls, like `values[i] * 2` or `Self.Count > 3`.
+VS Code: `▶︎ Run Test` | `⚙︎ Debug` above each test — breakpoints · steps · call stack · variables · watch expressions (no calls).
 
 ## Contributing
 

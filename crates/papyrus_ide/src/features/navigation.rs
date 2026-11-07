@@ -53,7 +53,7 @@ pub fn goto_definition(ws: &Workspace, file: FileId, offset: TextSize) -> Vec<Na
                 ModEventUse::Send => ModEventUse::Register,
                 _ => ModEventUse::Send,
             };
-            return same_event(ws, event.name)
+            return same_event(ws, sema.file, event.name)
                 .filter(|s| s.usage == wanted)
                 .map(|s| NavTarget {
                     file: NavFile::Script(s.file),
@@ -68,9 +68,11 @@ pub fn goto_definition(ws: &Workspace, file: FileId, offset: TextSize) -> Vec<Na
         if let Def::Script { file } = def
             && let Some(name) = ws.file(file).index.name
         {
+            let all = ws.file(sema.file).origin == crate::Origin::Outside;
             return ws
                 .scripts_named(name)
                 .iter()
+                .filter(|&&f| all || ws.file(f).origin != crate::Origin::Outside)
                 .filter_map(|&f| {
                     let range = ws.file(f).index.name_range?;
                     Some(NavTarget {
@@ -162,7 +164,7 @@ pub fn references(
 ) -> Vec<(NavFile, TextRange)> {
     let event = with_sema(ws, file, |sema| event_name_at(sema, offset).map(|e| e.name.to_owned()));
     if let Some(Some(event)) = event {
-        return same_event(ws, &event).map(|s| (NavFile::Script(s.file), s.range)).collect();
+        return same_event(ws, file, &event).map(|s| (NavFile::Script(s.file), s.range)).collect();
     }
     let Some(Some((def, name))) = with_sema(ws, file, |sema| {
         let (_, def) = def_at(sema, offset)?;
@@ -170,7 +172,7 @@ pub fn references(
     }) else {
         return Vec::new();
     };
-    find_references(ws, def, name, include_declaration)
+    find_references(ws, Some(file), def, name, include_declaration)
 }
 
 /// The name of a custom event at `offset`, not its callback.
@@ -179,9 +181,9 @@ fn event_name_at<'a>(sema: &Sema<'a>, offset: TextSize) -> Option<ModEventRef<'a
 }
 
 /// The strings naming the custom event `name`, in every known script.
-fn same_event(ws: &Workspace, name: &str) -> impl Iterator<Item = ModEventSite> {
+fn same_event(ws: &Workspace, from: FileId, name: &str) -> impl Iterator<Item = ModEventSite> {
     let name = name.to_owned();
-    sites(ws).into_iter().filter(move |s| s.name.eq_ignore_ascii_case(&name))
+    sites(ws, from).into_iter().filter(move |s| s.name.eq_ignore_ascii_case(&name))
 }
 
 /// All uses of the flag defined at `offset` in the flags file.
@@ -193,11 +195,14 @@ pub fn flag_references(
 ) -> Vec<(NavFile, TextRange)> {
     let flags = ws.flag_table(table);
     let Some(i) = flags.def_at(offset) else { return Vec::new() };
-    find_references(ws, Def::Flag(table, i as u32), flags.defs[i].name, include_declaration)
+    find_references(ws, None, Def::Flag(table, i as u32), flags.defs[i].name, include_declaration)
 }
 
+/// The references to `def`, among what `from` may know ([`Workspace::files_from`]);
+/// `None`: the scripts of the projects.
 pub(crate) fn find_references(
     ws: &Workspace,
+    from: Option<FileId>,
     def: Def,
     name: Name,
     include_declaration: bool,
@@ -221,8 +226,12 @@ pub(crate) fn find_references(
     // Common names (`OnUpdate`) are in thousands of files: these must not be parsed.
     let declaring = reached_through_extends(ws, def);
     // Only the files whose index has the name: the others are not read.
-    let files: Vec<FileId> =
-        ws.files().filter(|(_, f)| f.index.mentions(name)).map(|(id, _)| id).collect();
+    let outside = from.is_some_and(|f| ws.file(f).origin == crate::Origin::Outside);
+    let files: Vec<FileId> = ws
+        .files()
+        .filter(|(_, f)| (outside || f.origin != crate::Origin::Outside) && f.index.mentions(name))
+        .map(|(id, _)| id)
+        .collect();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
     let chunk = files.len().div_ceil(threads).max(1);
 

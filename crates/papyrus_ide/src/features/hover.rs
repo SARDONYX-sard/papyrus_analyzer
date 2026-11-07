@@ -35,7 +35,7 @@ fn mod_event_hover(sema: &Sema<'_>, offset: TextSize) -> Option<HoverResult> {
     use crate::mod_events::{ModEventUse, mod_event_at, sites};
     let event = mod_event_at(sema, offset)
         .filter(|r| r.usage != ModEventUse::Callback && !r.name.is_empty())?;
-    let all = sites(sema.ws);
+    let all = sites(sema.ws, sema.file);
     let scripts = |usage: ModEventUse| {
         let mut names: Vec<String> = all
             .iter()

@@ -229,8 +229,7 @@ impl<'s, 'a> Ctx<'s, 'a> {
         if event.usage == ModEventUse::Callback {
             let mut seen: Vec<Name> = Vec::new();
             for decl in callables(self.sema, event) {
-                let mine =
-                    decl.distance == 0 || ws.file(decl.file).origin == crate::Origin::Workspace;
+                let mine = decl.distance == 0 || ws.file(decl.file).origin.is_own();
                 if !mine || !is_event(self.sema, &decl) || seen.contains(&decl.name) {
                     continue;
                 }
@@ -243,7 +242,7 @@ impl<'s, 'a> Ctx<'s, 'a> {
             return;
         }
         let mut seen: Vec<String> = Vec::new();
-        for site in sites(ws) {
+        for site in sites(ws, self.sema.file) {
             let here = site.file == self.sema.file && site.range == event.name_range;
             let key = site.name.to_ascii_lowercase();
             if here || seen.contains(&key) {
@@ -506,7 +505,7 @@ impl<'s, 'a> Ctx<'s, 'a> {
         let mut matching: Vec<_> = self
             .sema
             .ws
-            .all_scripts()
+            .all_scripts_from(self.sema.file)
             // Like names: only the scripts of the project, for its scripts.
             .filter(|&(name, _)| self.sema.ws.script_near(name, self.sema.file).is_some())
             .filter(|(name, _)| {

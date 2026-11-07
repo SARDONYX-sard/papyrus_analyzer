@@ -99,7 +99,7 @@ fn is_named_elsewhere(sema: &Sema<'_>, name: Name) -> bool {
     in_file
         || sema
             .ws
-            .all_scripts()
+            .all_scripts_from(sema.file)
             .any(|(_, file)| file != sema.file && sema.ws.file(file).index.mentions(name))
 }
 

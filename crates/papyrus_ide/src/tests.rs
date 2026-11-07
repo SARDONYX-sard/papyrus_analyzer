@@ -1037,6 +1037,97 @@ fn tests_of_a_project_see_the_built_in_script_in_its_sources() {
 }
 
 #[test]
+fn scripts_of_no_project_see_everything_and_projects_do_not_see_them() {
+    let mut ws = Workspace::new();
+    let mut disk = |path: &str, text: &str, origin| {
+        ws.set_disk_index(PathBuf::from(path), index_text(text), origin);
+    };
+    let lib = "ScriptName Lib\nFunction Shared()\nEndFunction\n";
+    disk("/game/Lib.psc", lib, Origin::Import(0));
+    disk("/ws/corpus/mod/Lib.psc", lib, Origin::Outside);
+    disk(
+        "/ws/corpus/mod/Sibling.psc",
+        "ScriptName Sibling\nFunction S()\nEndFunction\n",
+        Origin::Outside,
+    );
+    let caller = ws.set_open(
+        PathBuf::from("/ws/corpus/other/Caller.psc"),
+        Arc::from("ScriptName Caller\nFunction C(Own o)\n    o.Mine()\nEndFunction\n"),
+        0,
+    );
+    ws.set_origin(caller, Origin::Outside);
+    ws.set_scopes(&[Scope {
+        sources: vec![PathBuf::from("/ws/src")],
+        visible: vec![PathBuf::from("/ws/src"), PathBuf::from("/game")],
+        flags: None,
+    }]);
+
+    let own_text = "ScriptName Own\nFunction Mine()\nEndFunction\nFunction Use(Lib l)\n    Mine()\nEndFunction\n";
+    let own = ws.set_open(PathBuf::from("/ws/src/Own.psc"), Arc::from(own_text), 0);
+    let outside_text = "ScriptName Near\nFunction N(Sibling s, Lib l, Own o)\n    o.Mine()\n    s.S()\nEndFunction\n";
+    let outside = ws.set_open(PathBuf::from("/ws/corpus/mod/Near.psc"), Arc::from(outside_text), 0);
+    ws.set_origin(outside, Origin::Outside);
+    let name = Name::new;
+
+    // A project: what it names, not the scripts of no project.
+    assert!(ws.script_near(name("Sibling"), own).is_none());
+    let lib_of_own = ws.script_near(name("Lib"), own).unwrap();
+    assert_eq!(ws.file(lib_of_own).path, PathBuf::from("/game/Lib.psc"));
+
+    // A script of no project: everything; among scripts of the same name, the nearest.
+    assert!(ws.script_near(name("Sibling"), outside).is_some());
+    assert!(ws.script_near(name("Own"), outside).is_some());
+    let lib_of_outside = ws.script_near(name("Lib"), outside).unwrap();
+    assert_eq!(ws.file(lib_of_outside).path, PathBuf::from("/ws/corpus/mod/Lib.psc"));
+    let at = |text: &str, needle: &str| TextSize::new(text.find(needle).unwrap() as u32);
+    assert_eq!(goto_definition(&ws, outside, at(outside_text, "Sibling")).len(), 1);
+    // Every script of a name: of the projects from a project.
+    let own_lib = at(own_text, "Lib l");
+    assert_eq!(goto_definition(&ws, own, own_lib).len(), 1);
+    let outside_lib = at(outside_text, "Lib l");
+    assert_eq!(goto_definition(&ws, outside, outside_lib).len(), 2);
+
+    // Script names to complete.
+    let import_text = "ScriptName Own2\nImport ";
+    let scripts = |ws: &mut Workspace, path: &str, outside: bool| {
+        let file = ws.set_open(PathBuf::from(path), Arc::from(import_text), 0);
+        if outside {
+            ws.set_origin(file, Origin::Outside);
+        }
+        let items = completions(ws, file, TextSize::of(import_text)).items;
+        ws.remove(file);
+        items.into_iter().map(|i| i.label).collect::<Vec<_>>()
+    };
+    let of_project = scripts(&mut ws, "/ws/src/Own2.psc", false);
+    assert!(of_project.iter().any(|l| l == "Lib"), "{of_project:?}");
+    assert!(!of_project.iter().any(|l| l == "Sibling"), "{of_project:?}");
+    let of_none = scripts(&mut ws, "/ws/corpus/mod/Own2.psc", true);
+    assert!(of_none.iter().any(|l| l == "Sibling"), "{of_none:?}");
+
+    // References: from the project, its scripts only; from the others, all.
+    let mine = at(own_text, "Mine()");
+    let in_files = |found: Vec<(NavFile, TextRange)>| {
+        let mut names: Vec<String> = found
+            .into_iter()
+            .map(|(f, _)| {
+                let NavFile::Script(f) = f else { panic!("not a script") };
+                ws.file(f).index.name_str().to_owned()
+            })
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    };
+    assert_eq!(in_files(references(&ws, own, mine, true)), ["Own"]);
+    let mine_outside = at(outside_text, "Mine()");
+    assert_eq!(in_files(references(&ws, outside, mine_outside, true)), ["Caller", "Near", "Own"]);
+
+    // Rename from the project leaves them as they are.
+    let edit = rename(&ws, own, mine, "Yours").unwrap();
+    assert!(edit.ranges.iter().all(|(f, _)| *f == NavFile::Script(own)), "{:?}", edit.ranges);
+}
+
+#[test]
 fn each_project_has_its_flags_file() {
     let dir = std::env::temp_dir().join(format!("papyrus-flag-tables-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

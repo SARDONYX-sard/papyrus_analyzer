@@ -95,7 +95,7 @@ fn run(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {
     if events.is_empty() {
         return;
     }
-    let all = sites(sema.ws);
+    let all = sites(sema.ws, sema.file);
     for event in events {
         let Some(name) = typo_of(&event, &all).into_iter().next() else { continue };
         let verb = if event.usage == ModEventUse::Register { "sends" } else { "registers" };
@@ -112,7 +112,7 @@ fn fix(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
     if other_half(event.usage).is_none() {
         return;
     }
-    for name in typo_of(&event, &sites(ctx.sema.ws)) {
+    for name in typo_of(&event, &sites(ctx.sema.ws, ctx.sema.file)) {
         acc.push(Assist {
             id: "fix_mod_event_name",
             label: format!("Change to `{name}`"),

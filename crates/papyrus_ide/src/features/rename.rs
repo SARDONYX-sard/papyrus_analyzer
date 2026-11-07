@@ -21,7 +21,7 @@ use super::{
     overrides, with_sema,
 };
 use crate::{
-    FileId, Origin, Workspace,
+    FileId, Workspace,
     index::{Flags, MemberKind},
     sema::{Def, LocalKind, Sema},
 };
@@ -72,9 +72,11 @@ pub fn rename(
     let mut edit = RenameEdit::default();
     for (d, name) in defs {
         // Uses in imported scripts stay as they are: those files are not ours.
-        edit.ranges.extend(find_references(ws, d, name, true).into_iter().filter(
-            |(f, _)| matches!(f, NavFile::Script(f) if ws.file(*f).origin == Origin::Workspace),
-        ));
+        edit.ranges.extend(
+            find_references(ws, Some(file), d, name, true)
+                .into_iter()
+                .filter(|(f, _)| matches!(f, NavFile::Script(f) if ws.file(*f).origin.is_own())),
+        );
     }
     edit.ranges.sort_by_key(|&(f, r)| (f, r.start()));
     edit.ranges.dedup();
@@ -119,7 +121,7 @@ fn check_renamable(sema: &Sema<'_>, def: Def) -> Result<(), String> {
     for d in family(sema, def) {
         let Some(file) = declaring_file(d) else { continue };
         let data = sema.ws.file(file);
-        if data.origin != Origin::Workspace {
+        if !data.origin.is_own() {
             return Err(format!(
                 "`{}` is declared by `{}`, an imported script; only the scripts of the workspace can be renamed",
                 def_name(sema, d).map_or_else(String::new, |n| n.to_string()),

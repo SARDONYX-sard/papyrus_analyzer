@@ -118,7 +118,7 @@ pub fn overridden(ws: &Workspace, file: FileId) -> Vec<Overridden> {
     let index = &ws.file(file).index;
     let Some(script) = index.name else { return Vec::new() };
     let children: Vec<(FileId, &ScriptIndex)> = ws
-        .files()
+        .files_from(file)
         .filter(|(f, data)| *f != file && extends(ws, &data.index, script))
         .map(|(f, d)| (f, &*d.index))
         .collect();

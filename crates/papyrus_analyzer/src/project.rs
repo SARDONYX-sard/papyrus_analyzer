@@ -4,11 +4,13 @@
 //! ancestors too) has its projects: the import directories, the flags file and
 //! the compiler invocation come from there. A manifest with `[workspace]`, or a
 //! member of one, loads every member: each script then sees, compiles and is
-//! linted like in its own project. One without is limited: its scripts see the
-//! folder and the game scripts, with the default settings. Scripts of neither
-//! are known only while open, with the default settings. Problems are published
-//! as diagnostics on each manifest, live while it is edited; the projects are
-//! reloaded, and the workspace re-indexed when needed, once a manifest is saved.
+//! linted like in its own project, and sees what its project names, nothing else.
+//! Other scripts are of no project ([`papyrus_ide::Origin::Outside`]): those of a
+//! folder without manifest, and of a folder with one but outside of its sources
+//! (read when one of them is opened). They work like limited mode, seeing every
+//! script with the default settings, and projects do not see them. Problems are
+//! published as diagnostics on each manifest, live while it is edited; the projects
+//! are reloaded, and the workspace re-indexed when needed, once a manifest is saved.
 //!
 //! The flags file of a script is, in order of preference: `[build] flags` of its
 //! project, the `papyrus.flagsFile` setting, a `TESV_Papyrus_Flags.flg` found
@@ -100,14 +102,7 @@ impl Server {
         }
         let configured: Vec<PathBuf> =
             self.config.import_directories.iter().filter_map(|d| self.expand_setting(d)).collect();
-        let mut scopes = project_scopes(&self.members, &configured);
-        let limited_imports = self.limited_imports();
-        scopes.extend(self.limited_roots.iter().map(|root| papyrus_ide::Scope {
-            sources: vec![root.clone()],
-            visible: std::iter::once(root.clone()).chain(limited_imports.iter().cloned()).collect(),
-            flags: None,
-        }));
-        scopes
+        project_scopes(&self.members, &configured)
     }
 
     /// Whether the server may change `path` (format, rename, code actions):

@@ -163,7 +163,7 @@ pub struct WorkspaceSymbol {
 pub fn workspace_symbols(ws: &Workspace, query: &str, limit: usize) -> Vec<WorkspaceSymbol> {
     let query = query.to_ascii_lowercase();
     let mut scored: Vec<(u32, WorkspaceSymbol)> = Vec::new();
-    for (file, data) in ws.files() {
+    for (file, data) in ws.files().filter(|(_, f)| f.origin != crate::Origin::Outside) {
         let index = &data.index;
         if let (Some(name), Some(range)) = (index.name, index.name_range)
             && let Some(score) = fuzzy_score(name.as_str(), &query)

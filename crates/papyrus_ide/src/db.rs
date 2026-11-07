@@ -28,6 +28,10 @@ pub enum Origin {
     Workspace,
     /// A file of the `n`-th configured import directory.
     Import(u16),
+    /// A file of no project, next to a project: of a workspace folder without
+    /// manifest, or outside of the sources of the manifest of its folder. It sees
+    /// every script, like in limited mode, but projects do not see it.
+    Outside,
     /// A script built into papyrus_analyzer (`PapyrusAnalyzer`, for tests):
     /// seen only by the files of the test directories
     /// ([`Workspace::set_test_dirs`]), and after every other script of the
@@ -60,6 +64,14 @@ impl OpenDoc {
         let doc =
             OpenDoc { text, version, tree: Arc::new(tree), errors: errors.into(), line_index };
         (doc, index)
+    }
+}
+
+impl Origin {
+    /// Whether the file is of the workspace folders, not of an import: it may be
+    /// renamed in.
+    pub fn is_own(self) -> bool {
+        matches!(self, Origin::Workspace | Origin::Outside)
     }
 }
 
@@ -178,6 +190,17 @@ impl Workspace {
     /// Iterates over the files opened in the editor.
     pub fn open_files(&self) -> impl Iterator<Item = (FileId, &FileData)> {
         self.files().filter(|(_, f)| f.open.is_some())
+    }
+
+    /// The files `from` may know: the others do not see [`Origin::Outside`] ones.
+    pub fn files_from(&self, from: FileId) -> impl Iterator<Item = (FileId, &FileData)> {
+        let all = self.file(from).origin == Origin::Outside;
+        self.files().filter(move |(_, f)| all || f.origin != Origin::Outside)
+    }
+
+    /// Sets where a file comes from, e.g. of a file opened before being indexed.
+    pub fn set_origin(&mut self, id: FileId, origin: Origin) {
+        self.files[id.0 as usize].as_mut().expect("file was removed").origin = origin;
     }
 
     /// Number of known files.
@@ -405,6 +428,8 @@ impl Workspace {
             return Some(*only).filter(|&id| visible(id));
         }
         let near_dir = near.and_then(|n| self.file(n).path.parent().map(Path::to_path_buf));
+        // Scripts of no project have no imports: the nearest one wins.
+        let any_origin = near.is_some_and(|n| self.file(n).origin == Origin::Outside);
         ids.iter().copied().filter(|&id| visible(id)).min_by_key(|&id| {
             let f = self.file(id);
             let stem_matches = f
@@ -414,7 +439,8 @@ impl Workspace {
             let shared = near_dir.as_deref().map_or(0, |dir| {
                 dir.components().zip(f.path.components()).take_while(|(a, b)| a == b).count()
             });
-            (f.open.is_none(), !stem_matches, f.origin, std::cmp::Reverse(shared), id)
+            let origin = if any_origin { Origin::Workspace } else { f.origin };
+            (f.open.is_none(), !stem_matches, origin, std::cmp::Reverse(shared), id)
         })
     }
 
@@ -423,8 +449,20 @@ impl Workspace {
         self.by_script.get(&name.key()).map_or(&[], |v| v)
     }
 
-    /// Iterates over every distinct script name, with its best file.
+    /// Iterates over every distinct script name of the projects, with its best
+    /// file.
     pub fn all_scripts(&self) -> impl Iterator<Item = (Name, FileId)> + '_ {
+        self.every_script().filter(|&(_, id)| self.file(id).origin != Origin::Outside)
+    }
+
+    /// Like [`Workspace::all_scripts`], for what `from` may know: everything for a
+    /// script of no project.
+    pub fn all_scripts_from(&self, from: FileId) -> impl Iterator<Item = (Name, FileId)> + '_ {
+        let all = self.file(from).origin == Origin::Outside;
+        self.every_script().filter(move |&(_, id)| all || self.file(id).origin != Origin::Outside)
+    }
+
+    fn every_script(&self) -> impl Iterator<Item = (Name, FileId)> + '_ {
         self.by_script.keys().filter_map(|&key| {
             let name = Name::new(key.as_str());
             let id = self.script(name)?;

@@ -132,7 +132,7 @@ fn states_of(file: FileId, index: &ScriptIndex, in_child: bool) -> impl Iterator
 pub fn declarations(sema: &Sema<'_>, script: Name) -> Vec<StateDecl> {
     let mut out: Vec<StateDecl> =
         sema.chain(script).flat_map(|(file, index)| states_of(file, index, false)).collect();
-    for (name, file) in sema.ws.all_scripts() {
+    for (name, file) in sema.ws.all_scripts_from(sema.file) {
         let index = &sema.ws.file(file).index;
         if name != script
             && index.members.iter().any(|m| m.kind == MemberKind::State)
@@ -163,7 +163,7 @@ pub(crate) fn candidates_named(sema: &Sema<'_>, state: &StateRef<'_>) -> Vec<Sta
     let mut out: Vec<StateDecl> =
         sema.chain(state.script).flat_map(|(file, index)| named(file, index, false)).collect();
     if state.on_self {
-        for (file, data) in sema.ws.files() {
+        for (file, data) in sema.ws.files_from(sema.file) {
             let index = &data.index;
             if index.mentions(name)
                 && index.find(name, |m| m.kind == MemberKind::State).is_some()
@@ -250,7 +250,7 @@ pub fn is_declared(sema: &Sema<'_>, script: Name, state: &str) -> bool {
             .any(|m| m.kind == MemberKind::State && m.name.as_str().eq_ignore_ascii_case(state))
     };
     sema.chain(script).any(|(_, index)| is_state(index))
-        || sema.ws.all_scripts().any(|(name, file)| {
+        || sema.ws.all_scripts_from(sema.file).any(|(name, file)| {
             is_state(&sema.ws.file(file).index)
                 && sema.chain(name).any(|(_, i)| i.name == Some(script))
         })

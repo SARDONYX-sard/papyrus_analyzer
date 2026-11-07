@@ -78,6 +78,9 @@ pub(crate) struct Server {
     /// The workspace folders without manifest, when another one has one: all
     /// of them work like `limited` mode.
     pub(crate) limited_roots: Vec<PathBuf>,
+    /// A script outside of the sources of a project was opened: the rest of its
+    /// workspace folders is known too, for it.
+    pub(crate) index_outside: bool,
     /// The manifests whose problems are published.
     pub(crate) manifest_files: Vec<PathBuf>,
     /// Why `manifest` could not be loaded.
@@ -182,6 +185,7 @@ impl Server {
             members: Vec::new(),
             manifest: None,
             limited_roots: Vec::new(),
+            index_outside: false,
             manifest_files: Vec::new(),
             manifest_error: None,
             other_docs: Default::default(),
@@ -459,7 +463,19 @@ impl Server {
             self.other_doc_changed(&path);
             return;
         }
-        self.ws.set_open(path, Arc::from(doc.text), doc.version);
+        let origin = self.origin_of(&path);
+        // Of a folder with a manifest: the other scripts of no project are read now.
+        let starts_outside = origin == Origin::Outside
+            && !self.index_outside
+            && self.roots.iter().any(|r| path.starts_with(r) && !self.limited_roots.contains(r));
+        let file = self.ws.set_open(path, Arc::from(doc.text), doc.version);
+        if self.ws.file(file).origin != Origin::Builtin {
+            self.ws.set_origin(file, origin);
+        }
+        if starts_outside {
+            self.index_outside = true;
+            self.start_indexing();
+        }
         self.publish_open_diagnostics();
     }
 
@@ -629,8 +645,11 @@ impl Server {
 
     fn origin_of(&self, path: &Path) -> Origin {
         let in_root = self.roots.iter().any(|r| path.starts_with(r));
+        let in_tests =
+            || self.members.iter().flat_map(|m| &m.test_sources).any(|d| path.starts_with(d));
         match self.import_dirs().iter().position(|d| path.starts_with(d)) {
             Some(i) if !in_root => Origin::Import(i as u16),
+            None if !self.members.is_empty() && !in_tests() => Origin::Outside,
             _ => Origin::Workspace,
         }
     }
@@ -651,7 +670,11 @@ impl Server {
         self.ws.set_scopes(&scopes);
         self.install_builtins();
         for (path, text, version) in open {
-            self.ws.set_open(path, text, version);
+            let origin = self.origin_of(&path);
+            let file = self.ws.set_open(path, text, version);
+            if self.ws.file(file).origin != Origin::Builtin {
+                self.ws.set_origin(file, origin);
+            }
         }
         let open_flags: Vec<(PathBuf, String)> = self
             .other_docs
@@ -765,16 +788,17 @@ impl Server {
     }
 
     /// The directories whose scripts are known. With a manifest, what it names:
-    /// sources, tests, dependencies and imports, as for the compiler; other
-    /// scripts below its workspace folder are not of the project. A workspace
-    /// folder without manifest (limited mode): all of it.
+    /// sources, tests, dependencies and imports, as for the compiler. Without any
+    /// manifest (limited mode): the workspace folders. Next to a project, the
+    /// scripts of no project ([`Origin::Outside`]): of the folders without manifest,
+    /// and of the others once one of these scripts is opened.
     pub(crate) fn index_dirs(&self) -> Vec<(PathBuf, Origin)> {
         let mut dirs: Vec<(PathBuf, Origin)> = Vec::new();
         let own: Vec<PathBuf> = if self.members.is_empty() {
             self.roots.clone()
         } else {
             let sources = self.members.iter().flat_map(|m| m.sources.iter().chain(&m.test_sources));
-            sources.chain(&self.limited_roots).cloned().collect()
+            sources.cloned().collect()
         };
         for dir in own {
             if !dirs.iter().any(|(d, _)| dir.starts_with(d)) {
@@ -788,6 +812,11 @@ impl Server {
                 let origin = self.origin_of(&dir);
                 dirs.push((dir, origin));
             }
+        }
+        if !self.members.is_empty() {
+            let outside = |root: &&PathBuf| self.index_outside || self.limited_roots.contains(root);
+            // After the others: a script is of its project first.
+            dirs.extend(self.roots.iter().filter(outside).map(|r| (r.clone(), Origin::Outside)));
         }
         dirs
     }
@@ -1166,11 +1195,17 @@ fn index_workspace(
     let mut paths = Vec::new();
     let mut flag_files = Vec::new();
     for (dir, origin) in dirs {
-        collect_scripts(dir, *origin, skipped, &mut paths, &mut flag_files);
+        // The flags files of what is of no project are not for the projects.
+        let mut none = Vec::new();
+        let flags = if *origin == Origin::Outside { &mut none } else { &mut flag_files };
+        collect_scripts(dir, *origin, skipped, &mut paths, flags);
     }
     for dir in flag_dirs.iter().filter(|f| !dirs.iter().any(|(d, _)| f.starts_with(d))) {
         collect_scripts(dir, Origin::Workspace, skipped, &mut Vec::new(), &mut flag_files);
     }
+    // A folder of no project holds the projects too: the first origin wins.
+    let mut seen = rustc_hash::FxHashSet::default();
+    paths.retain(|(path, _): &(PathBuf, Origin)| seen.insert(path.clone()));
     let total = paths.len();
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
     let chunk = total.div_ceil(threads).max(1);

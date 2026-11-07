@@ -163,7 +163,7 @@ pub fn callables(sema: &Sema<'_>, callback: &ModEventRef<'_>) -> Vec<CallbackDec
         .flat_map(|(i, (file, _))| of(file, u8::from(i > 0)))
         .collect();
     if callback.on_self {
-        for (name, file) in sema.ws.all_scripts() {
+        for (name, file) in sema.ws.all_scripts_from(sema.file) {
             if name != script && sema.chain(name).any(|(_, i)| i.name == Some(script)) {
                 out.extend(of(file, 2));
             }
@@ -184,7 +184,7 @@ fn callback_decl(sema: &Sema<'_>, callback: &ModEventRef<'_>) -> Option<Callback
         return own;
     }
     sema.ws
-        .files()
+        .files_from(sema.file)
         .filter(|(file, data)| {
             data.index.mentions(name)
                 && data.index.name.is_some_and(|other| {
@@ -232,9 +232,9 @@ pub struct ModEventSite {
     pub usage: ModEventUse,
 }
 
-/// Where the known scripts name custom events. Only the few scripts using
-/// these functions are read.
-pub fn sites(ws: &Workspace) -> Vec<ModEventSite> {
+/// Where the scripts `from` may know name custom events. Only the few scripts
+/// using these functions are read.
+pub fn sites(ws: &Workspace, from: FileId) -> Vec<ModEventSite> {
     let names = [
         Name::new("RegisterForModEvent"),
         Name::new("UnregisterForModEvent"),
@@ -242,7 +242,7 @@ pub fn sites(ws: &Workspace) -> Vec<ModEventSite> {
         Name::new("ModEvent"),
     ];
     let mut out = Vec::new();
-    for (file, data) in ws.files() {
+    for (file, data) in ws.files_from(from) {
         if !names.iter().any(|&n| data.index.mentions(n)) {
             continue;
         }
