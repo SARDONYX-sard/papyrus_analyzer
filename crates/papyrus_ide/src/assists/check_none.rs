@@ -85,6 +85,7 @@ fn check_local(
         target: range,
         edits: vec![wrap(ctx, stmt, None, name, stmt_text)],
         fixes: Some(lint_code(*source)),
+        other_files: Vec::new(),
     })
 }
 
@@ -138,6 +139,7 @@ fn bind(
         target: u.range,
         edits: vec![wrap(ctx, stmt, Some(&decl), &name, &stmt_text)],
         fixes: Some(lint_code(u.source)),
+        other_files: Vec::new(),
     })
 }
 

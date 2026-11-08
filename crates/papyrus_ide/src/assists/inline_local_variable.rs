@@ -75,6 +75,7 @@ pub(crate) fn inline_local_variable(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) 
         target: decl_range,
         edits,
         fixes: None,
+        other_files: Vec::new(),
     });
 }
 

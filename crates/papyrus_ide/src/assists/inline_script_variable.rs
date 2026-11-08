@@ -79,6 +79,7 @@ pub(crate) fn inline_script_variable(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>)
         target: member.name_range,
         edits,
         fixes: None,
+        other_files: Vec::new(),
     });
 }
 

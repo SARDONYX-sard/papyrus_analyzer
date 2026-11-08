@@ -52,6 +52,7 @@ pub(crate) fn inline_import(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
         target: range,
         edits,
         fixes: None,
+        other_files: Vec::new(),
     });
 }
 
@@ -112,6 +113,7 @@ pub(crate) fn add_import(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
         target: call.syntax().trimmed_range(),
         edits,
         fixes: None,
+        other_files: Vec::new(),
     });
 }
 

@@ -88,6 +88,7 @@ fn fix(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
             target: callback.token.text_range(),
             edits: vec![TextEdit { range: callback.name_range, new_text: name.to_owned() }],
             fixes: Some(CODE),
+            other_files: Vec::new(),
         });
     }
 }

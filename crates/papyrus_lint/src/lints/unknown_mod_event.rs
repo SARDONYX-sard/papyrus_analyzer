@@ -120,6 +120,7 @@ fn fix(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
             target: event.token.text_range(),
             edits: vec![TextEdit { range: event.name_range, new_text: name }],
             fixes: Some(CODE),
+            other_files: Vec::new(),
         });
     }
 }

@@ -58,10 +58,13 @@ pub struct Assist {
     pub kind: AssistKind,
     /// The code the assist is about.
     pub target: TextRange,
-    /// The edits, applied together.
+    /// The edits of the file, applied together.
     pub edits: Vec<TextEdit>,
     /// The code of the diagnostic it fixes, if any.
     pub fixes: Option<&'static str>,
+    /// The edits of other files, applied with `edits`: an assist renaming a
+    /// script renames its uses in the other scripts too.
+    pub other_files: Vec<(FileId, Vec<TextEdit>)>,
 }
 
 /// What assists look at.

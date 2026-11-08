@@ -178,6 +178,7 @@ fn fix(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
         target: call.syntax().trimmed_range(),
         edits,
         fixes: Some(CODE),
+        other_files: Vec::new(),
     });
 }
 

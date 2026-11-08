@@ -572,6 +572,7 @@ pub(crate) fn ignore_fixes(text: &str, d: &Diagnostic) -> Vec<Assist> {
                 new_text: format!("{indent}; #[allow({name})]{newline}"),
             }],
             fixes: Some(d.code),
+            other_files: Vec::new(),
         },
         Assist {
             id: "allow_lint_file",
@@ -583,6 +584,7 @@ pub(crate) fn ignore_fixes(text: &str, d: &Diagnostic) -> Vec<Assist> {
                 new_text: format!("; #![allow({name})]{newline}"),
             }],
             fixes: Some(d.code),
+            other_files: Vec::new(),
         },
     ]
 }
@@ -623,6 +625,7 @@ pub(crate) fn attribute_fixes(text: &str, d: &Diagnostic) -> Option<Assist> {
             TextEdit { range: removed, new_text: String::new() },
         ],
         fixes: Some(MISPLACED),
+        other_files: Vec::new(),
     })
 }
 

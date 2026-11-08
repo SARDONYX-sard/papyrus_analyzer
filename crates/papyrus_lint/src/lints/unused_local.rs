@@ -109,6 +109,7 @@ fn fix(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
         target: decl,
         edits: vec![edit],
         fixes: Some(CODE),
+        other_files: Vec::new(),
     });
 }
 

@@ -95,6 +95,7 @@ fn fix(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
         target: range,
         edits: vec![TextEdit { range: replaced, new_text: ctx.text(value.syntax()).to_owned() }],
         fixes: Some(CODE),
+        other_files: Vec::new(),
     });
 }
 

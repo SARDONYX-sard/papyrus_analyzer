@@ -756,7 +756,16 @@ impl Server {
                     .map(|e| TextEdit { range: lines.range(e.range), new_text: e.new_text })
                     .collect();
                 #[allow(clippy::mutable_key_type)]
-                let changes = std::iter::once((uri.clone(), edits)).collect();
+                let mut changes: FxHashMap<_, Vec<TextEdit>> =
+                    std::iter::once((uri.clone(), edits)).collect();
+                // Edits of other scripts: a script renamed in its uses.
+                for (other, other_edits) in a.other_files {
+                    let other_lines = Lines::of(&self.ws, other)?;
+                    let other_uri = crate::conv::path_to_uri(&self.ws.file(other).path);
+                    changes.entry(other_uri).or_default().extend(other_edits.into_iter().map(
+                        |e| TextEdit { range: other_lines.range(e.range), new_text: e.new_text },
+                    ));
+                }
                 // Allowing a problem is an option, not the fix to apply first.
                 let preferred = !diagnostics.is_empty() && !a.id.starts_with("allow_lint");
                 Some(CodeActionOrCommand::CodeAction(lsp_types::CodeAction {
@@ -765,7 +774,7 @@ impl Server {
                     is_preferred: Some(preferred),
                     diagnostics: (!diagnostics.is_empty()).then_some(diagnostics),
                     edit: Some(lsp_types::WorkspaceEdit {
-                        changes: Some(changes),
+                        changes: Some(changes.into_iter().collect()),
                         ..Default::default()
                     }),
                     ..Default::default()

@@ -89,6 +89,7 @@ fn fix(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
         target: range,
         edits: vec![TextEdit { range: line_range(ctx.sema.text, range), new_text: String::new() }],
         fixes: Some(CODE),
+        other_files: Vec::new(),
     });
 }
 

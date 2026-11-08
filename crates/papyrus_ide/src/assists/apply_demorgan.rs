@@ -62,6 +62,7 @@ pub(crate) fn apply_demorgan(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
         target: replaced.trimmed_range(),
         edits: vec![TextEdit { range: replaced.trimmed_range(), new_text }],
         fixes: None,
+        other_files: Vec::new(),
     });
 }
 
