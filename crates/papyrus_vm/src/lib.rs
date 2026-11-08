@@ -85,6 +85,17 @@ pub struct StackFrame {
     pub locals: Vec<(String, Value)>,
 }
 
+/// Where an error of [`Vm::errors`] happened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ErrorSite {
+    /// The script defining the function, as declared.
+    pub script: String,
+    /// The function, as declared.
+    pub function: String,
+    /// The source line, when the script has debug info.
+    pub line: Option<u32>,
+}
+
 /// Follows a run line by line, like a debugger: set with
 /// [`Vm::set_debugger`].
 pub trait Debugger {
@@ -171,6 +182,11 @@ pub struct Vm {
     pub output: Vec<String>,
     /// Errors the game would log; the code went on.
     pub errors: Vec<String>,
+    /// Where each error of [`Vm::errors`] happened, at the same index: the
+    /// line of the innermost Papyrus function running (the caller, for the
+    /// errors of natives like the failed assertions). Read it with
+    /// [`Vm::error_site`].
+    error_sites: Vec<Option<ErrorSite>>,
     /// Every native call, in order.
     pub native_calls: Vec<NativeCall>,
     /// Seconds of game time, advanced by `Utility.Wait`.
@@ -207,6 +223,7 @@ impl Vm {
             mocking: Default::default(),
             output: Vec::new(),
             errors: Vec::new(),
+            error_sites: Vec::new(),
             native_calls: Vec::new(),
             clock: 0.0,
             seed: 0x2545_f491_4f6c_dd1d,
@@ -230,6 +247,7 @@ impl Vm {
     pub fn begin_test(&mut self) {
         self.output.clear();
         self.errors.clear();
+        self.error_sites.clear();
         self.native_calls.clear();
         self.timers.clear();
         self.mod_event_listeners.clear();
@@ -413,6 +431,27 @@ impl Vm {
             }
         }
         Ok(())
+    }
+
+    /// Where the error `index` of [`Vm::errors`] happened, when it happened in
+    /// Papyrus code.
+    pub fn error_site(&self, index: usize) -> Option<&ErrorSite> {
+        self.error_sites.get(index)?.as_ref()
+    }
+
+    /// Gives the errors logged by the instruction `pc` of `func` and the
+    /// natives it called their place; those of the Papyrus functions it
+    /// called have theirs already.
+    fn locate_errors(&mut self, func: &Func, frame: &Frame, pc: usize, errors_before: usize) {
+        // Errors logged before, out of any Papyrus code, have no place.
+        if self.error_sites.len() < errors_before {
+            self.error_sites.resize(errors_before, None);
+        }
+        let script =
+            self.script(&frame.script).map_or_else(|| frame.script.clone(), |s| s.name.clone());
+        let site =
+            ErrorSite { script, function: func.name.clone(), line: func.lines.get(pc).copied() };
+        self.error_sites.resize(self.errors.len(), Some(site));
     }
 
     /// Calls the function or event `name` of `obj`.
@@ -680,6 +719,7 @@ impl Vm {
             }
             self.step_limit -= 1;
             self.trace(func, frame, pc)?;
+            let errors_before = self.errors.len();
             let a = &inst.args;
             let arg = |vm: &Vm, frame: &Frame, i: usize| vm.read(frame, &a[i]);
             let mut next = pc + 1;
@@ -903,6 +943,9 @@ impl Vm {
                     };
                     self.write(frame, &a[1], Value::Int(found.unwrap_or(-1)));
                 }
+            }
+            if self.errors.len() > errors_before.max(self.error_sites.len()) {
+                self.locate_errors(func, frame, pc, errors_before);
             }
             pc = next;
         }

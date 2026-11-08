@@ -618,6 +618,23 @@
           "autoDetect",
           "${workspaceFolder}"
         ]
+      },
+      {
+        "name": "papyrus-test",
+        "owner": "papyrus-test",
+        "source": "Papyrus test",
+        "severity": "error",
+        "pattern": {
+          "regexp": "^(.*?\\.psc)\\((\\d+),(\\d+)\\):\\s*(.*)$",
+          "line": 2,
+          "message": 4,
+          "column": 3,
+          "file": 1
+        },
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ]
       }
     ],
     "taskDefinitions": [

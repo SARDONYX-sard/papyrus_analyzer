@@ -28,6 +28,15 @@ use lsp_types::{
 };
 use papyrus_ide::{TokenModifier, TokenType};
 
+// The global allocator: see the features of Cargo.toml.
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
+#[global_allocator]
+static ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "mimalloc", not(all(feature = "jemalloc", not(target_env = "msvc")))))]
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[allow(clippy::print_stdout)]
 fn main() -> anyhow::Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();

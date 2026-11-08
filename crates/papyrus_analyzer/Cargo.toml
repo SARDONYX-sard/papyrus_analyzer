@@ -11,6 +11,15 @@ license.workspace      = true
 name = "papyrus_analyzer"
 path = "src/main.rs"
 
+[features]
+default = ["mimalloc"]
+# The global allocator. Compiling and running tests on all cores allocate a
+# lot from every thread, which the allocator of the system serializes. With
+# both features, jemalloc is used; it is not available with MSVC (Windows),
+# where the feature does nothing.
+mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
+
 [dependencies]
 papyrus_compiler.workspace   = true
 papyrus_decompiler.workspace = true
@@ -27,11 +36,15 @@ crossbeam-channel.workspace = true
 lsp-server                  = "0.10.0"
 lsp-types                   = "0.97"
 log                         = "0.4"
+mimalloc                    = { workspace = true, optional = true }
 rayon.workspace             = true
 rustc-hash.workspace        = true
 env_logger                  = "0.11"
 serde                       = { version = "1", features = ["derive"] }
 serde_json.workspace        = true
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 
 [lints]
 workspace = true

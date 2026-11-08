@@ -233,6 +233,11 @@ fn asserts_record_failures() {
             "assertion failed: expected True",
         ]
     );
+    // Each at the line calling the assertion, in the function calling it.
+    let lines: Vec<_> = (0..3).map(|i| vm.error_site(i).and_then(|s| s.line)).collect();
+    assert_eq!(lines, [Some(4), Some(5), Some(6)]);
+    let site = vm.error_site(0).unwrap();
+    assert_eq!((site.script.as_str(), site.function.as_str()), ("T", "Check"));
 }
 
 #[test]

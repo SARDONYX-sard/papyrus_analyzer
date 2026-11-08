@@ -524,7 +524,8 @@ impl Server {
         }
     }
 
-    /// Handles `papyrus/compileCommands`.
+    /// Handles `papyrus/compileCommands`. With the built-in compiler, the
+    /// scripts of a directory compile in one process (see [`batch_builtin`]).
     pub(crate) fn compile_commands(
         &mut self,
         params: CompileCommandsParams,
@@ -573,14 +574,15 @@ impl Server {
         Ok(CompileCommandsResult {
             manifest: self.manifest.as_ref().unwrap_or(&first.manifest_path).display().to_string(),
             output: first.output.display().to_string(),
-            commands: commands
+            commands: batch_builtin(commands, &exe)
                 .into_iter()
-                .map(|c| CompileCommand {
+                .map(|(c, scripts)| CompileCommand {
                     command_line: c.to_string(),
                     program: c.program.display().to_string(),
                     args: c.args,
                     cwd: c.cwd.display().to_string(),
                     output: c.output.display().to_string(),
+                    scripts,
                 })
                 .collect(),
         })
@@ -784,4 +786,88 @@ fn innermost<'a>(projects: &'a [Project], path: &Path) -> Option<&'a Project> {
         })
         .max_by_key(|(depth, _)| *depth)
         .map(|(_, p)| p)
+}
+
+/// Each command with the scripts it compiles.
+///
+/// A compiler process loads the import directories before compiling, which
+/// takes longer than compiling a script: one process per script makes a
+/// folder of a thousand scripts take minutes. The built-in compiler (`exe
+/// compile <script> <arguments>`) takes several scripts, so the commands that
+/// differ only by their script (the scripts of one directory) are merged,
+/// as long as the command line stays short enough for Windows.
+fn batch_builtin(
+    commands: Vec<papyrus_project::CompileCommand>,
+    exe: &Path,
+) -> Vec<(papyrus_project::CompileCommand, Vec<String>)> {
+    /// Below the 32767 characters of a Windows command line.
+    const MAX_LINE: usize = 24_000;
+    // Where the script is in the arguments of the built-in compiler.
+    const SCRIPT: usize = 1;
+    let mut out: Vec<(papyrus_project::CompileCommand, Vec<String>)> = Vec::new();
+    // The arguments but the script, to the batch open for them.
+    let mut open: rustc_hash::FxHashMap<(PathBuf, PathBuf, Vec<String>), usize> =
+        Default::default();
+    for mut command in commands {
+        let builtin = command.program == exe && command.args.len() > SCRIPT;
+        if !builtin {
+            let script = command.args.iter().find(|a| a.to_ascii_lowercase().ends_with(".psc"));
+            let scripts = script.cloned().into_iter().collect();
+            out.push((command, scripts));
+            continue;
+        }
+        let script = command.args.remove(SCRIPT);
+        let key = (command.cwd.clone(), command.output.clone(), command.args.clone());
+        if let Some(&i) = open.get(&key) {
+            let (batch, scripts) = &mut out[i];
+            if batch.to_string().len() + script.len() + 3 < MAX_LINE {
+                batch.args.insert(SCRIPT + scripts.len(), script.clone());
+                scripts.push(script);
+                continue;
+            }
+        }
+        command.args.insert(SCRIPT, script.clone());
+        open.insert(key, out.len());
+        out.push((command, vec![script]));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn command(program: &str, script: &str, output: &str) -> papyrus_project::CompileCommand {
+        papyrus_project::CompileCommand {
+            program: PathBuf::from(program),
+            args: vec!["compile".into(), script.into(), "-import=a;b".into()],
+            cwd: PathBuf::from("/root"),
+            output: PathBuf::from(output),
+        }
+    }
+
+    #[test]
+    fn builtin_commands_of_a_directory_are_merged() {
+        let exe = Path::new("/pa");
+        let batches = batch_builtin(
+            vec![
+                command("/pa", "/s/A.psc", "/out"),
+                command("/pa", "/s/sub/B.psc", "/out/sub"),
+                command("/pa", "/s/C.psc", "/out"),
+                command("/official", "/s/D.psc", "/out"),
+            ],
+            exe,
+        );
+        let args: Vec<_> = batches.iter().map(|(c, _)| c.args.join(" ")).collect();
+        assert_eq!(
+            args,
+            [
+                "compile /s/A.psc /s/C.psc -import=a;b",
+                "compile /s/sub/B.psc -import=a;b",
+                "compile /s/D.psc -import=a;b",
+            ]
+        );
+        assert_eq!(batches[0].1, ["/s/A.psc", "/s/C.psc"]);
+        assert_eq!(batches[2].1, ["/s/D.psc"]);
+    }
 }

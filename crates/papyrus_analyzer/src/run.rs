@@ -8,10 +8,17 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::{path::PathBuf, rc::Rc};
+use std::{
+    path::PathBuf,
+    rc::Rc,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use papyrus_ide::Workspace;
+use papyrus_pex::PexFile;
 use papyrus_vm::{Script, ScriptLoader, Value, Vm};
+use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 
 const USAGE: &str = "\
 usage: papyrus_analyzer run Script.Function [ARG]...
@@ -47,21 +54,29 @@ options:
   --doc        only the doc tests
   -h, --help   print this help";
 
-/// Compiles the scripts of the workspace when the machine loads them.
+/// Compiles the scripts of the workspace when the machine loads them. Cheap to
+/// clone: each thread running tests has its own machine, and its own copy;
+/// the copies share what they compiled.
+#[derive(Clone)]
 pub(crate) struct Compiled {
     ws: Workspace,
     imports: Vec<PathBuf>,
+    compiled: Arc<PexCache>,
 }
+
+/// The scripts compiled, by lowercase name; `None` when they do not compile.
+/// A script is compiled once: a thread asking for it while another compiles
+/// it waits for that one.
+type PexCache = Mutex<FxHashMap<String, Arc<OnceLock<Option<Arc<PexFile<'static>>>>>>>;
 
 impl Compiled {
     /// Compiles the scripts of `ws`, whose scripts use those of `imports`.
     pub(crate) fn new(ws: Workspace, imports: Vec<PathBuf>) -> Compiled {
-        Compiled { ws, imports }
+        Compiled { ws, imports, compiled: Arc::default() }
     }
-}
 
-impl ScriptLoader for Compiled {
-    fn load(&mut self, name: &str) -> Option<Script> {
+    /// Compiles the script `name` with the workspace of this thread.
+    fn compile(&mut self, name: &str) -> Option<PexFile<'static>> {
         let find = |ws: &Workspace| {
             ws.files()
                 .find(|(_, d)| d.index.name.is_some_and(|n| n.as_str().eq_ignore_ascii_case(name)))
@@ -73,12 +88,56 @@ impl ScriptLoader for Compiled {
         papyrus_compiler::loader::load(&mut self.ws, &[path], &self.imports);
         let (file, _) = find(&self.ws)?;
         match papyrus_compiler::compile(&self.ws, file, &Default::default()) {
-            Ok(pex) => Script::from_pex(&pex),
+            Ok(pex) => Some(pex),
             Err(e) => {
                 eprintln!("cannot compile {name}: {e:?}");
                 None
             }
         }
+    }
+
+    /// The files of the scripts, by lowercase name: where errors happened.
+    fn script_paths(&self) -> ScriptPaths {
+        self.ws
+            .files()
+            .filter_map(|(_, d)| {
+                Some((d.index.name?.as_str().to_ascii_lowercase(), d.path.clone()))
+            })
+            .collect()
+    }
+}
+
+/// The file of each script, by lowercase name.
+type ScriptPaths = FxHashMap<String, PathBuf>;
+
+/// The errors of the run that happened in a script file, as
+/// `path(line,column): message`: the format of the compiler errors, which the
+/// problem matchers of editors turn into diagnostics at that place. The column
+/// is the start of the line.
+fn located_errors(vm: &Vm, paths: &ScriptPaths) -> Vec<String> {
+    (0..vm.errors.len())
+        .filter_map(|i| {
+            let site = vm.error_site(i)?;
+            let line = site.line?;
+            let path = paths.get(&site.script.to_ascii_lowercase())?;
+            let text = papyrus_ide::read_file(path).unwrap_or_default();
+            let indent = text
+                .lines()
+                .nth(line.saturating_sub(1) as usize)
+                .map_or(0, |l| l.chars().take_while(|c| c.is_whitespace()).count());
+            Some(format!("{}({line},{}): {}", path.display(), indent + 1, vm.errors[i]))
+        })
+        .collect()
+}
+
+impl ScriptLoader for Compiled {
+    fn load(&mut self, name: &str) -> Option<Script> {
+        let cell = {
+            let mut compiled = self.compiled.lock().unwrap_or_else(|e| e.into_inner());
+            compiled.entry(name.to_ascii_lowercase()).or_default().clone()
+        };
+        let pex = cell.get_or_init(|| self.compile(name).map(Arc::new)).clone()?;
+        Script::from_pex(&pex)
     }
 }
 
@@ -95,7 +154,7 @@ pub(crate) fn loader(scripts: &[PathBuf]) -> Compiled {
             papyrus_vm::PAPYRUS_ANALYZER
         );
     }
-    Compiled { ws, imports }
+    Compiled::new(ws, imports)
 }
 
 /// An argument from the command line.
@@ -129,7 +188,9 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let mut scripts: Vec<PathBuf> = Vec::new();
     collect(&std::env::current_dir().unwrap_or_default(), &mut scripts);
     let started = std::time::Instant::now();
-    let mut vm = Vm::new(loader(&scripts));
+    let compiled = loader(&scripts);
+    let paths = compiled.script_paths();
+    let mut vm = Vm::new(compiled);
     let marked = marked_functions(&scripts);
     let result = start(&mut vm, &marked, script).and_then(|obj| vm.call(obj, function, &values));
 
@@ -147,6 +208,10 @@ pub(crate) fn run(args: &[String]) -> i32 {
         println!("\nerrors:");
         for e in &errors {
             println!("    {e}");
+        }
+        // At the start of the lines, for the problem matchers.
+        for at in located_errors(&vm, &paths) {
+            println!("{at}");
         }
     }
     if !vm.native_calls.is_empty() {
@@ -216,20 +281,32 @@ pub(crate) fn test(args: &[String]) -> i32 {
         // then the summary.
         let plural = if tests.len() == 1 { "" } else { "s" };
         println!("\nrunning {} test{plural}", tests.len());
-        let mut vm = Vm::new(loader(&scripts));
-        let mut results: Vec<TestResult> = Vec::new();
-        for Marked { script, function, .. } in tests.iter().copied() {
-            vm.begin_test();
-            let result =
-                start(&mut vm, &marked, script).and_then(|obj| vm.call(obj, function, &[]));
-            let name = format!("{script}.{function}");
-            let problem = match &result {
-                // One line per error, like a panic message.
-                Ok(_) if !vm.errors.is_empty() => Some(vm.errors.join("\n")),
-                _ => problem(&vm, &result),
-            };
-            print_verdict(&name, problem.is_some());
-            results.push((name, std::mem::take(&mut vm.output), problem));
+        let compiled = loader(&scripts);
+        let paths = compiled.script_paths();
+        // Tests are independent: they run on all cores, each with a machine of
+        // its thread (the machines share what they compiled). `collect` keeps
+        // the order.
+        let results: Vec<TestResult> = tests
+            .par_iter()
+            .map_init(
+                || Vm::new(compiled.clone()),
+                |vm, &Marked { script, function, .. }| {
+                    vm.begin_test();
+                    let result =
+                        start(vm, &marked, script).and_then(|obj| vm.call(obj, function, &[]));
+                    let problem = match &result {
+                        // One line per error, like a panic message.
+                        Ok(_) if !vm.errors.is_empty() => Some(vm.errors.join("\n")),
+                        _ => problem(vm, &result),
+                    };
+                    let name = format!("{script}.{function}");
+                    let located = located_errors(vm, &paths);
+                    (name, std::mem::take(&mut vm.output), problem, located)
+                },
+            )
+            .collect();
+        for (name, _, problem, _) in &results {
+            print_verdict(name, problem.is_some());
         }
         failed |= report(&results, filtered_out, started);
     }
@@ -247,25 +324,32 @@ pub(crate) fn test(args: &[String]) -> i32 {
         println!("   Doc-tests\n");
         let plural = if docs.len() == 1 { "" } else { "s" };
         println!("running {} test{plural}", docs.len());
-        let Compiled { ws, imports } = loader(&scripts);
+        let Compiled { ws, imports, .. } = loader(&scripts);
         // Where the scripts of the examples are, in memory only: below the test
         // directory, they see `PapyrusAnalyzer`.
         let dir = cwd.join(".papyrus-doc-tests");
-        let mut results: Vec<TestResult> = Vec::new();
-        for (i, doc) in docs.iter().enumerate() {
-            let name = format!("DocTest{i}");
-            let base = doc.base.as_deref();
-            let problem = crate::doctest::run(&ws, &imports, &dir, &doc.example, &name, base).err();
-            print_verdict(&doc.name, problem.is_some());
-            results.push((doc.name.clone(), Vec::new(), problem));
+        let results: Vec<TestResult> = docs
+            .par_iter()
+            .enumerate()
+            .map(|(i, doc)| {
+                let name = format!("DocTest{i}");
+                let base = doc.base.as_deref();
+                let problem =
+                    crate::doctest::run(&ws, &imports, &dir, &doc.example, &name, base).err();
+                (doc.name.clone(), Vec::new(), problem, Vec::new())
+            })
+            .collect();
+        for (name, _, problem, _) in &results {
+            print_verdict(name, problem.is_some());
         }
         failed |= report(&results, all - docs.len(), started);
     }
     i32::from(failed)
 }
 
-/// A test: its name, its output (`Debug.Trace`...) and why it failed.
-type TestResult = (String, Vec<String>, Option<String>);
+/// A test: its name, its output (`Debug.Trace`...), why it failed, and where
+/// (see [`located_errors`]).
+type TestResult = (String, Vec<String>, Option<String>, Vec<String>);
 
 fn print_verdict(name: &str, failed: bool) {
     let verdict = if failed { paint(RED, "FAILED") } else { paint(GREEN, "ok") };
@@ -277,16 +361,23 @@ fn print_verdict(name: &str, failed: bool) {
 fn report(results: &[TestResult], filtered_out: usize, started: std::time::Instant) -> bool {
     let failures: Vec<_> = results
         .iter()
-        .filter_map(|(name, output, problem)| Some((name, output, problem.as_ref()?)))
+        .filter_map(|(name, output, problem, located)| {
+            Some((name, output, problem.as_ref()?, located))
+        })
         .collect();
     if !failures.is_empty() {
         println!("\nfailures:\n");
-        for (name, output, problem) in &failures {
+        for (name, output, problem, located) in &failures {
             println!("---- {name} stdout ----");
             for line in output.iter() {
                 println!("{line}");
             }
-            println!("{problem}\n");
+            println!("{problem}");
+            // At the start of the lines, for the problem matchers.
+            for at in located.iter() {
+                println!("{at}");
+            }
+            println!();
         }
         println!("failures:");
         for (name, ..) in &failures {
@@ -294,7 +385,7 @@ fn report(results: &[TestResult], filtered_out: usize, started: std::time::Insta
         }
     }
 
-    let failed = results.iter().filter(|(_, _, p)| p.is_some()).count();
+    let failed = results.iter().filter(|(_, _, p, _)| p.is_some()).count();
     let verdict = if failed > 0 { paint(RED, "FAILED") } else { paint(GREEN, "ok") };
     println!(
         "\ntest result: {verdict}. {} passed; {failed} failed; {filtered_out} filtered out; finished in {:.2}s\n",

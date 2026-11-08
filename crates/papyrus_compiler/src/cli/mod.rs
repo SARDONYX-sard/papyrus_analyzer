@@ -34,7 +34,8 @@ use std::{
 };
 
 use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
-use papyrus_ide::{Diagnostic, Severity, Workspace};
+use papyrus_ide::{Diagnostic, FileId, Severity, Workspace};
+use rayon::prelude::*;
 
 use crate::{
     CompileError, CompileOptions,
@@ -273,44 +274,23 @@ pub fn run_args(args: &Args) -> i32 {
     });
     let renderer = if terminal { Renderer::styled() } else { Renderer::plain() };
     let output = args.output.clone().unwrap_or_else(|| cwd.clone());
+    // Once, not per script.
+    if let Err(e) = std::fs::create_dir_all(&output) {
+        eprintln!("{}: {e}", output.display());
+        return 1;
+    }
+    let cx = BatchCx { ws: &ws, args, output: &output, format, renderer: &renderer };
+    let jobs: Vec<(&PathBuf, FileId)> =
+        scripts.iter().filter_map(|path| Some((path, ws.file_id(path)?))).collect();
+    // Compiled and written on all cores; `collect` keeps the order of the
+    // reports.
+    let reports: Vec<Report> =
+        jobs.par_iter().map(|&(path, file)| cx.compile(path, file)).collect();
     let mut failed = 0;
-    for path in &scripts {
-        let Some(file) = ws.file_id(path) else { continue };
-        if !args.quiet {
-            println!("Compiling \"{}\"...", path.display());
-        }
-        match crate::compile(&ws, file, &args.options) {
-            Ok(pex) => {
-                let name = ws.file(file).index.name_str();
-                match write_outputs(&pex, &output, name, args) {
-                    Ok(()) if !args.quiet => println!("Compilation succeeded."),
-                    Ok(()) => {}
-                    Err(e) => {
-                        eprintln!("{e}");
-                        failed += 1;
-                    }
-                }
-            }
-            Err(CompileError::Unreadable) => {
-                eprintln!("{}: cannot read the file", path.display());
-                failed += 1;
-            }
-            Err(CompileError::Diagnostics(diags)) => {
-                let text = ws.text(file).unwrap_or_default();
-                for d in &diags {
-                    match format {
-                        DiagnosticFormat::Human => {
-                            eprintln!("{}", render(&renderer, &ws, path, &text, d))
-                        }
-                        DiagnosticFormat::Official => {
-                            eprintln!("{}", render_official(path, &text, d))
-                        }
-                    }
-                }
-                eprintln!("No output generated for {}, compilation failed.", path.display());
-                failed += 1;
-            }
-        }
+    for report in reports {
+        print!("{}", report.stdout);
+        eprint!("{}", report.stderr);
+        failed += usize::from(report.failed);
     }
     if !args.quiet || failed > 0 {
         println!(
@@ -322,16 +302,84 @@ pub fn run_args(args: &Args) -> i32 {
     i32::from(failed > 0)
 }
 
+/// What every compilation of a batch shares.
+struct BatchCx<'a> {
+    ws: &'a Workspace,
+    args: &'a Args,
+    output: &'a Path,
+    format: DiagnosticFormat,
+    renderer: &'a Renderer,
+}
+
+/// What the compilation of one script prints, and whether it failed.
+#[derive(Default)]
+struct Report {
+    stdout: String,
+    stderr: String,
+    failed: bool,
+}
+
+impl BatchCx<'_> {
+    /// Compiles one script and writes its outputs. Prints nothing: scripts
+    /// compile in parallel, their reports are printed in order.
+    fn compile(&self, path: &Path, file: FileId) -> Report {
+        use std::fmt::Write as _;
+        let (ws, args) = (self.ws, self.args);
+        let mut r = Report::default();
+        if !args.quiet {
+            let _ = writeln!(r.stdout, "Compiling \"{}\"...", path.display());
+        }
+        match crate::compile(ws, file, &args.options) {
+            Ok(pex) => {
+                let name = ws.file(file).index.name_str();
+                match write_outputs(&pex, self.output, name, args, &mut r.stdout) {
+                    Ok(()) if !args.quiet => r.stdout.push_str("Compilation succeeded.\n"),
+                    Ok(()) => {}
+                    Err(e) => {
+                        let _ = writeln!(r.stderr, "{e}");
+                        r.failed = true;
+                    }
+                }
+            }
+            Err(CompileError::Unreadable) => {
+                let _ = writeln!(r.stderr, "{}: cannot read the file", path.display());
+                r.failed = true;
+            }
+            Err(CompileError::Diagnostics(diags)) => {
+                let text = ws.text(file).unwrap_or_default();
+                for d in &diags {
+                    let _ = match self.format {
+                        DiagnosticFormat::Human => {
+                            writeln!(r.stderr, "{}", render(self.renderer, ws, path, &text, d))
+                        }
+                        DiagnosticFormat::Official => {
+                            writeln!(r.stderr, "{}", render_official(path, &text, d))
+                        }
+                    };
+                }
+                let _ = writeln!(
+                    r.stderr,
+                    "No output generated for {}, compilation failed.",
+                    path.display()
+                );
+                r.failed = true;
+            }
+        }
+        r
+    }
+}
+
 fn write_outputs(
     pex: &papyrus_pex::PexFile<'_>,
     dir: &Path,
     name: &str,
     args: &Args,
+    stdout: &mut String,
 ) -> Result<(), String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let asm = || papyrus_pex::disasm::disassemble(pex, Default::default());
     if args.debug {
-        println!("{}", asm());
+        stdout.push_str(&asm());
+        stdout.push('\n');
     }
     if args.asm != AsmMode::None {
         let path = dir.join(format!("{name}.pas"));
@@ -442,11 +490,18 @@ fn collect(path: &Path, out: &mut Vec<PathBuf>, recursive: bool) {
         return;
     }
     let Ok(entries) = std::fs::read_dir(path) else { return };
-    let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    // The type comes with the entry: no `stat` per file, which matters with
+    // thousands of scripts.
+    let mut entries: Vec<(PathBuf, bool)> =
+        entries.flatten().map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir()))).collect();
     entries.sort();
-    for entry in entries {
-        if recursive || entry.is_file() {
-            collect(&entry, out, recursive);
+    for (entry, is_dir) in entries {
+        if is_dir {
+            if recursive {
+                collect(&entry, out, recursive);
+            }
+        } else if entry.extension().is_some_and(|e| e.eq_ignore_ascii_case("psc")) {
+            out.push(std::path::absolute(&entry).unwrap_or(entry));
         }
     }
 }

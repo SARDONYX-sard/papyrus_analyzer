@@ -13,33 +13,59 @@
 //! The other scripts are registered with their name only: the compiler checks
 //! that variables are not named like any known script.
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use papyrus_ide::{
-    Origin, ScriptIndex, Workspace,
+    DiskDoc, Origin, ScriptIndex, Workspace,
     index::{BaseType, TypeRef},
 };
 use papyrus_intern::Name;
 use papyrus_parser::{
-    SyntaxKind,
+    SyntaxKind, SyntaxNode,
     ast::{self, AstNode},
 };
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::log;
 
 /// Adds `targets` and the scripts of `imports` they need to `ws`.
 pub fn load(ws: &mut Workspace, targets: &[PathBuf], imports: &[PathBuf]) {
-    let texts: Vec<(PathBuf, String)> = targets
-        .iter()
-        .filter_map(|path| Some((path.clone(), papyrus_ide::read_file(path)?)))
+    // Read and parsed on all cores.
+    let docs: Vec<(PathBuf, DiskDoc, ScriptIndex)> = targets
+        .par_iter()
+        .filter_map(|path| {
+            let (text, modified) = papyrus_ide::read_file_with_time(path)?;
+            let (doc, index) = DiskDoc::new(Arc::from(text), modified);
+            Some((path.clone(), doc, index))
+        })
         .collect();
-    load_texts(ws, &texts, imports);
+    load_docs(ws, docs, imports);
 }
 
 /// Like [`load`], with the text of the targets, which need not be on disk: the
 /// examples of doc tests.
 pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[PathBuf]) {
+    let docs = targets
+        .iter()
+        .map(|(path, text)| {
+            let (doc, index) = DiskDoc::new(Arc::from(text.as_str()), None);
+            (path.clone(), doc, index)
+        })
+        .collect();
+    load_docs(ws, docs, imports);
+}
+
+/// Adds the parsed targets, kept parsed for their compilation, and the
+/// scripts of `imports` they need.
+fn load_docs(
+    ws: &mut Workspace,
+    targets: Vec<(PathBuf, DiskDoc, ScriptIndex)>,
+    imports: &[PathBuf],
+) {
     let start = std::time::Instant::now();
     // Script name (its file name, which `Name` compares ignoring case) to
     // file, the first import directory winning.
@@ -56,12 +82,11 @@ pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[
 
     let mut loaded: FxHashSet<Name> = FxHashSet::default();
     let mut queue: Vec<Name> = Vec::new();
-    for (path, text) in targets {
-        let index = papyrus_ide::index_text(text);
+    for (path, doc, index) in targets {
         loaded.extend(index.name);
-        mentioned_names(text, &mut queue);
+        mentioned_names(doc.tree.root(&doc.text), &mut queue);
         declared_names(&index, &mut queue);
-        ws.set_disk_index(path.clone(), index, Origin::Workspace);
+        ws.set_disk_doc(path, doc, index, Origin::Workspace);
     }
 
     let mut parsed = 0;
@@ -91,10 +116,8 @@ pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[
 }
 
 /// Every name the source mentions that could be a script.
-fn mentioned_names(text: &str, out: &mut Vec<Name>) {
-    let parse = papyrus_parser::parse(text);
-    let root = parse.source_file();
-    for node in root.syntax().descendants() {
+fn mentioned_names(root: SyntaxNode<'_>, out: &mut Vec<Name>) {
+    for node in root.descendants() {
         let name = match node.kind() {
             SyntaxKind::NAME_REF => ast::NameRef::cast(node).map(|n| n.text()),
             SyntaxKind::TYPE => {

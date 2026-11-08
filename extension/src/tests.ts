@@ -17,13 +17,32 @@ export function projectDir(file: string): string {
   return vscode.workspace.getWorkspaceFolder(vscode.Uri.file(file))?.uri.fsPath ?? path.dirname(file);
 }
 
+/**
+ * The problem matcher of `run` and `test`: the errors of the failed tests, as
+ * `path(line,col): message`, become diagnostics at that place, like the
+ * panics of `cargo test`.
+ */
+export const TEST_PROBLEMS = ["$papyrus-test"];
+
 /** Runs `papyrus_analyzer ARGS` in a terminal, from `cwd`. */
-export async function runServerTask(args: string[], cwd: string, name: string): Promise<void> {
+export async function runServerTask(
+  args: string[],
+  cwd: string,
+  name: string,
+  problemMatchers: string[] = [],
+): Promise<void> {
   if (!state.context) {
     return;
   }
   const execution = new vscode.ProcessExecution(serverPath(state.context), args, { cwd });
-  const task = new vscode.Task({ type: "papyrus-run" }, vscode.TaskScope.Workspace, name, "papyrus", execution);
+  const task = new vscode.Task(
+    { type: "papyrus-run" },
+    vscode.TaskScope.Workspace,
+    name,
+    "papyrus",
+    execution,
+    problemMatchers,
+  );
   task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, clear: true };
   await vscode.tasks.executeTask(task);
 }
@@ -40,5 +59,5 @@ export async function runTests(files: string[], doc = false): Promise<void> {
   const args = files.map((f) => path.relative(cwd, f) || ".");
   const what = doc ? "doc test" : "test";
   const name = files.length === 1 ? `${what} ${path.basename(files[0])}` : `${what} ${files.length} paths`;
-  await runServerTask(["test", ...(doc ? ["--doc"] : []), ...args], cwd, name);
+  await runServerTask(["test", ...(doc ? ["--doc"] : []), ...args], cwd, name, TEST_PROBLEMS);
 }

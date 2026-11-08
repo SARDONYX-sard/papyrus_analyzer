@@ -8,6 +8,7 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
+    time::SystemTime,
 };
 
 use papyrus_intern::{Name, Symbol};
@@ -90,6 +91,35 @@ pub struct FileData {
     scope: Option<u8>,
     /// The scopes seeing the file, as bits.
     visible_in: u64,
+    /// The parse of the disk contents the index was built from, kept by
+    /// [`Workspace::set_disk_doc`] for files about to be compiled.
+    pub disk: Option<DiskDoc>,
+}
+
+/// The contents of a file read from disk, parsed: like [`OpenDoc`], for files
+/// the compiler is about to check and compile, which then are not read nor
+/// parsed again.
+#[derive(Clone, Debug)]
+pub struct DiskDoc {
+    /// The text.
+    pub text: Arc<str>,
+    /// When the file was modified.
+    pub modified: Option<SystemTime>,
+    /// The syntax tree of `text`.
+    pub tree: Arc<SyntaxTree>,
+    /// The syntax errors of `text`.
+    pub errors: Arc<[SyntaxError]>,
+}
+
+impl DiskDoc {
+    /// Parses `text`.
+    pub fn new(text: Arc<str>, modified: Option<SystemTime>) -> (DiskDoc, ScriptIndex) {
+        let parse = papyrus_parser::parse(&text);
+        let index = ScriptIndex::build(parse.source_file());
+        let (tree, errors) = parse.into_parts();
+        let doc = DiskDoc { text, modified, tree: Arc::new(tree), errors: errors.into() };
+        (doc, index)
+    }
 }
 
 /// A project of a multi-project workspace, for name resolution: like for the
@@ -215,6 +245,8 @@ impl Workspace {
             Some(id) => {
                 let file = self.files[id.0 as usize].as_mut().expect("file was removed");
                 file.origin = file.origin.min(origin);
+                // The file changed on disk: a kept text is stale.
+                file.disk = None;
                 if file.open.is_none() {
                     let old = std::mem::replace(&mut file.index, Arc::new(index));
                     self.reindex_script(id, old.name);
@@ -228,8 +260,26 @@ impl Workspace {
                 origin,
                 scope: None,
                 visible_in: 0,
+                disk: None,
             }),
         }
+    }
+
+    /// Like [`Workspace::set_disk_index`], keeping the parsed contents the
+    /// index was built from: [`Workspace::text`], [`Workspace::modified`] and
+    /// `FileSource::load` then do not go to the disk nor parse again. For files
+    /// about to be compiled.
+    pub fn set_disk_doc(
+        &mut self,
+        path: PathBuf,
+        doc: DiskDoc,
+        index: ScriptIndex,
+        origin: Origin,
+    ) -> FileId {
+        let id = self.set_disk_index(path, index, origin);
+        let file = self.files[id.0 as usize].as_mut().expect("file was removed");
+        file.disk = Some(doc);
+        id
     }
 
     /// Sets the editor contents of a file, adding the file if needed.
@@ -250,6 +300,7 @@ impl Workspace {
                 origin: Origin::Workspace,
                 scope: None,
                 visible_in: 0,
+                disk: None,
             }),
         }
     }
@@ -263,6 +314,7 @@ impl Workspace {
                 let index = crate::index_text(&text);
                 let file = self.files[id.0 as usize].as_mut().expect("file was removed");
                 file.open = None;
+                file.disk = None;
                 let old = std::mem::replace(&mut file.index, Arc::new(index));
                 self.reindex_script(id, old.name);
             }
@@ -538,9 +590,20 @@ impl Workspace {
     /// The text of a file: the editor contents, or the file read from disk.
     pub fn text(&self, id: FileId) -> Option<Arc<str>> {
         let file = self.file(id);
-        match &file.open {
-            Some(doc) => Some(doc.text.clone()),
-            None => crate::read_file(&file.path).map(Arc::from),
+        match (&file.open, &file.disk) {
+            (Some(doc), _) => Some(doc.text.clone()),
+            (None, Some(doc)) => Some(doc.text.clone()),
+            (None, None) => crate::read_file(&file.path).map(Arc::from),
+        }
+    }
+
+    /// When the file was modified on disk: kept by [`Workspace::set_disk_doc`],
+    /// else asked to the disk.
+    pub fn modified(&self, id: FileId) -> Option<SystemTime> {
+        let file = self.file(id);
+        match &file.disk {
+            Some(disk) => disk.modified,
+            None => std::fs::metadata(&file.path).and_then(|m| m.modified()).ok(),
         }
     }
 }

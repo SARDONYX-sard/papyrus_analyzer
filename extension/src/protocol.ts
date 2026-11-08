@@ -37,6 +37,12 @@ export interface CompileCommand {
   cwd: string;
   output: string;
   commandLine: string;
+  /**
+   * The scripts it compiles: one for an external compiler, several for the
+   * built-in one, which reports each failure as
+   * `No output generated for <script>, compilation failed.`
+   */
+  scripts: string[];
 }
 
 /** Result of `papyrus/compileCommands`. */

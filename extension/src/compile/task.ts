@@ -21,9 +21,40 @@ export interface CompileEvent {
 /** Fired for every script a compile task runs, for the scripts view. */
 export const compileEvents = new vscode.EventEmitter<CompileEvent>();
 
-/** The script a command compiles: the built-in compiler takes leading arguments. */
-function scriptOf(command: CompileCommand): string {
-  return command.args.find((a) => a.toLowerCase().endsWith(".psc")) ?? command.args[0];
+/** The scripts a command compiles (servers before `scripts` sent one per command). */
+function scriptsOf(command: CompileCommand): string[] {
+  if (command.scripts?.length) {
+    return command.scripts;
+  }
+  return [command.args.find((a) => a.toLowerCase().endsWith(".psc")) ?? command.args[0]];
+}
+
+/** A path compared as Windows does: case and slashes do not matter. */
+function pathKey(file: string): string {
+  return path.resolve(file).replace(/\\/g, "/").toLowerCase();
+}
+
+/**
+ * The scripts of a command that failed. A command compiling one script failed
+ * when it exits with an error; one compiling several (the built-in compiler)
+ * names its failures: `No output generated for <script>, compilation failed.`
+ * or `<script>: cannot read the file`.
+ */
+function failedScripts(scripts: string[], code: number, output: string): Set<string> {
+  if (code === 0) {
+    return new Set();
+  }
+  if (scripts.length === 1) {
+    return new Set(scripts);
+  }
+  const named = new Set<string>();
+  const pattern = /^(?:No output generated for (.+), compilation failed\.|(.+\.psc): cannot read the file)\s*$/gim;
+  for (const match of output.matchAll(pattern)) {
+    named.add(pathKey(match[1] ?? match[2]));
+  }
+  const failed = scripts.filter((s) => named.has(pathKey(s)));
+  // An error no script is named in (an output that cannot be written): all of them.
+  return new Set(failed.length > 0 ? failed : scripts);
 }
 
 /** Saves the open documents and runs a compile task. */
@@ -49,8 +80,9 @@ export function compileTask(definition: PapyrusTaskDefinition): vscode.Task {
 }
 
 /**
- * Runs the compiler once per script (the compiler cannot compile several
- * files at once), then prints one result line per script.
+ * Runs the compiler commands: one per script for an external compiler (it
+ * cannot compile several files at once), one per directory for the built-in
+ * one. Then prints one result line per script.
  */
 class CompileTerminal implements vscode.Pseudoterminal {
   private readonly writeEmitter = new vscode.EventEmitter<string>();
@@ -101,13 +133,19 @@ class CompileTerminal implements vscode.Pseudoterminal {
       // The compiler does not create nested output directories itself.
       fs.mkdirSync(command.output, { recursive: true });
       this.writeLine(`\x1b[2m> ${command.commandLine}\x1b[0m`);
-      const script = scriptOf(command);
-      compileEvents.fire({ script, status: "running" });
+      const scripts = scriptsOf(command);
+      for (const script of scripts) {
+        compileEvents.fire({ script, status: "running" });
+      }
       // The compiler exits with -1, which Node reports as an unsigned value.
-      const raw = await this.spawn(command);
+      const { code: raw, output } = await this.spawn(command);
       const code = raw > 0x7fffffff ? raw - 0x100000000 : raw;
-      compileEvents.fire({ script, status: code === 0 ? "passed" : "failed" });
-      results.push({ script, code });
+      const failed = failedScripts(scripts, code, output);
+      for (const script of scripts) {
+        const ok = !failed.has(script);
+        compileEvents.fire({ script, status: ok ? "passed" : "failed" });
+        results.push({ script, code: ok ? 0 : code === 0 ? 1 : code });
+      }
     }
 
     // One line per script: a failure in the middle of a long output is easy to miss.
@@ -128,23 +166,29 @@ class CompileTerminal implements vscode.Pseudoterminal {
     return failures === 0 ? 0 : 1;
   }
 
-  private spawn(command: CompileCommand): Promise<number> {
+  /** Runs a command, showing its output; resolves to its exit code and output. */
+  private spawn(command: CompileCommand): Promise<{ code: number; output: string }> {
     return new Promise((resolve) => {
       if (!fs.existsSync(command.program)) {
         this.writeLine(`\x1b[31mcompiler not found: ${command.program} (set [compiler] path)\x1b[0m`);
-        resolve(1);
+        resolve({ code: 1, output: "" });
         return;
       }
       const child = cp.spawn(command.program, command.args, { cwd: command.cwd, windowsHide: true });
       this.child = child;
-      const forward = (data: Buffer) => this.writeEmitter.fire(data.toString().replace(/\r?\n/g, "\r\n"));
+      let output = "";
+      const forward = (data: Buffer) => {
+        const text = data.toString();
+        output += text;
+        this.writeEmitter.fire(text.replace(/\r?\n/g, "\r\n"));
+      };
       child.stdout?.on("data", forward);
       child.stderr?.on("data", forward);
       child.on("error", (error) => {
         this.writeLine(`\x1b[31m${error.message}\x1b[0m`);
-        resolve(1);
+        resolve({ code: 1, output });
       });
-      child.on("close", (code) => resolve(code ?? 1));
+      child.on("close", (code) => resolve({ code: code ?? 1, output }));
     });
   }
 }

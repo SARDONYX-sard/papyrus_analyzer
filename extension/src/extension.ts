@@ -13,7 +13,7 @@ import { showStatus } from "./statusCommand";
 import { showSyntaxTree } from "./syntaxTree";
 import { formatProject, lintProject } from "./project";
 import { showReferences } from "./references";
-import { projectDir, runServerTask, runTests } from "./tests";
+import { TEST_PROBLEMS, projectDir, runServerTask, runTests } from "./tests";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   state.context = context;
@@ -38,7 +38,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     // The `▶ Run Test` code lens: `papyrus_analyzer run Script.Function` in a
     // terminal, from the folder of the papyrus.toml of the script.
     vscode.commands.registerCommand("papyrus.runTest", async (uri: string, target: string) => {
-      await runServerTask(["run", target], projectDir(vscode.Uri.parse(uri).fsPath), `run ${target}`);
+      const cwd = projectDir(vscode.Uri.parse(uri).fsPath);
+      await runServerTask(["run", target], cwd, `run ${target}`, TEST_PROBLEMS);
     }),
     // The `▶ Run Tests` code lens of test scripts: `papyrus_analyzer test FILE`.
     vscode.commands.registerCommand("papyrus.runTests", async (uri: string) => {

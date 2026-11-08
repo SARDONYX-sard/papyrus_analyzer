@@ -132,6 +132,10 @@ pub(crate) struct CompileCommand {
     pub(crate) output: String,
     /// The whole command, quoted for display.
     pub(crate) command_line: String,
+    /// The scripts it compiles: one for an external compiler, several for the
+    /// built-in one, which then reports each failure as
+    /// `No output generated for <script>, compilation failed.`
+    pub(crate) scripts: Vec<String>,
 }
 
 /// `papyrus/manifestTemplate`: a `papyrus.toml` to start from.

@@ -226,6 +226,9 @@ impl FileSource {
         if let Some(doc) = &data.open {
             return Some(FileSource { text: doc.text.clone(), tree: doc.tree.clone() });
         }
+        if let Some(doc) = &data.disk {
+            return Some(FileSource { text: doc.text.clone(), tree: doc.tree.clone() });
+        }
         Some(FileSource::from_text(ws.text(file)?))
     }
 
@@ -237,6 +240,10 @@ impl FileSource {
     ) -> Option<(FileSource, Vec<papyrus_parser::SyntaxError>)> {
         let data = ws.file(file);
         if let Some(doc) = &data.open {
+            let src = FileSource { text: doc.text.clone(), tree: doc.tree.clone() };
+            return Some((src, doc.errors.to_vec()));
+        }
+        if let Some(doc) = &data.disk {
             let src = FileSource { text: doc.text.clone(), tree: doc.tree.clone() };
             return Some((src, doc.errors.to_vec()));
         }

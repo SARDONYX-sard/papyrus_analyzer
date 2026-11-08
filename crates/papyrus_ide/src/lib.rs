@@ -27,7 +27,7 @@ use std::path::Path;
 pub use papyrus_parser::{TextRange, TextSize};
 
 pub use crate::{
-    db::{FileData, FileId, OpenDoc, Origin, Scope, Workspace},
+    db::{DiskDoc, FileData, FileId, OpenDoc, Origin, Scope, Workspace},
     features::{
         completion::{
             CompletionItem, CompletionKind, Completions, completions, flag_file_completions,
@@ -71,6 +71,17 @@ pub fn decode_text(bytes: &[u8]) -> String {
     }
 }
 
+/// Like [`decode_text`], reusing the buffer of UTF-8 text instead of copying it.
+pub fn decode_owned(mut bytes: Vec<u8>) -> String {
+    if bytes.starts_with(b"\xEF\xBB\xBF") {
+        bytes.drain(..3);
+    }
+    match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => e.as_bytes().iter().map(|&b| windows_1252(b)).collect(),
+    }
+}
+
 fn windows_1252(b: u8) -> char {
     const HIGH: [char; 32] = [
         '€', '\u{81}', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', '\u{8D}', 'Ž',
@@ -85,7 +96,18 @@ fn windows_1252(b: u8) -> char {
 
 /// Reads and decodes a script file.
 pub fn read_file(path: &Path) -> Option<String> {
-    std::fs::read(path).ok().map(|b| decode_text(&b))
+    std::fs::read(path).ok().map(decode_owned)
+}
+
+/// Like [`read_file`], with the modification time of the file, asked to the
+/// open file rather than by path (one lookup of the path instead of two).
+pub fn read_file_with_time(path: &Path) -> Option<(String, Option<std::time::SystemTime>)> {
+    use std::io::Read as _;
+    let mut file = std::fs::File::open(path).ok()?;
+    let meta = file.metadata().ok();
+    let mut bytes = Vec::with_capacity(meta.as_ref().map_or(0, |m| m.len() as usize));
+    file.read_to_end(&mut bytes).ok()?;
+    Some((decode_owned(bytes), meta.and_then(|m| m.modified().ok())))
 }
 
 /// Parses `text` and summarizes its declarations.

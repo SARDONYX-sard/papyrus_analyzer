@@ -20,8 +20,6 @@ pub mod opt;
 mod script;
 mod strings;
 
-use std::path::Path;
-
 use papyrus_ide::{Diagnostic, FileId, Severity, Workspace, sema::FileSource};
 use papyrus_pex::PexFile;
 
@@ -75,7 +73,10 @@ pub fn compile(
     let sema = source.sema(ws, file);
     let info = script::SourceInfo {
         file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        modified: modified_time(path),
+        modified: ws
+            .modified(file)
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs() as i64),
     };
     let pex = script::assemble(sema, bodies, &info, options);
     log::info!(
@@ -85,14 +86,6 @@ pub fn compile(
         pex.string_table.len()
     );
     Ok(pex)
-}
-
-fn modified_time(path: &Path) -> i64 {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_secs() as i64)
 }
 
 #[cfg(test)]

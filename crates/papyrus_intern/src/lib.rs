@@ -166,20 +166,77 @@ impl fmt::Display for Name {
 #[derive(Default)]
 struct Inner {
     map: FxHashMap<&'static str, Symbol>,
-    strings: Vec<&'static str>,
+    /// How many strings [`Interner::strings`] holds.
+    len: usize,
 }
 
 struct Interner {
     inner: RwLock<Inner>,
+    /// The strings by symbol, read without the lock: [`Symbol::as_str`] runs
+    /// all the time, on every thread compiling, and a shared lock taken that
+    /// often makes the threads wait for each other.
+    strings: Strings,
 }
 
 fn interner() -> &'static Interner {
     static INTERNER: OnceLock<Interner> = OnceLock::new();
-    INTERNER.get_or_init(|| Interner { inner: RwLock::new(Inner::default()) })
+    INTERNER.get_or_init(|| Interner {
+        inner: RwLock::new(Inner::default()),
+        strings: Strings::default(),
+    })
+}
+
+/// An append-only array readable without lock: chunk `k` holds the
+/// `2^k` strings from index `2^k - 1`, allocated when the first one is
+/// added; added strings never move.
+struct Strings {
+    chunks: [OnceLock<Box<[OnceLock<&'static str>]>>; 32],
+}
+
+impl Default for Strings {
+    fn default() -> Strings {
+        Strings { chunks: std::array::from_fn(|_| OnceLock::new()) }
+    }
+}
+
+impl Strings {
+    /// The chunk and the position in it of the string `index`.
+    fn place(index: usize) -> (usize, usize) {
+        let chunk = (usize::BITS - 1 - (index + 1).leading_zeros()) as usize;
+        (chunk, index + 1 - (1 << chunk))
+    }
+
+    /// Adds the string `index`; under the write lock, one at a time.
+    fn set(&self, index: usize, s: &'static str) {
+        let (chunk, at) = Strings::place(index);
+        let slots = self.chunks[chunk]
+            .get_or_init(|| (0..1usize << chunk).map(|_| OnceLock::new()).collect());
+        let _ = slots[at].set(s);
+    }
+
+    fn get(&self, index: usize) -> &'static str {
+        let (chunk, at) = Strings::place(index);
+        self.chunks[chunk].get().and_then(|slots| slots[at].get()).expect("interned symbol")
+    }
 }
 
 impl Interner {
+    /// The symbol of `s`: from the cache of the thread when it has seen `s`,
+    /// else from the shared map, under its lock.
     fn intern(&self, s: &str) -> Symbol {
+        thread_local! {
+            static SEEN: std::cell::RefCell<FxHashMap<&'static str, Symbol>> =
+                std::cell::RefCell::default();
+        }
+        if let Some(sym) = SEEN.with_borrow(|seen| seen.get(s).copied()) {
+            return sym;
+        }
+        let sym = self.intern_shared(s);
+        SEEN.with_borrow_mut(|seen| seen.insert(self.resolve(sym), sym));
+        sym
+    }
+
+    fn intern_shared(&self, s: &str) -> Symbol {
         if let Some(&sym) = self.read().map.get(s) {
             return sym;
         }
@@ -191,15 +248,17 @@ impl Interner {
         }
 
         let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
-        inner.strings.push(leaked);
-        let index = u32::try_from(inner.strings.len()).expect("interner overflow");
+        // Stored before the symbol exists: whoever gets it can read it.
+        self.strings.set(inner.len, leaked);
+        inner.len += 1;
+        let index = u32::try_from(inner.len).expect("interner overflow");
         let sym = Symbol(NonZeroU32::new(index).expect("index starts at 1"));
         inner.map.insert(leaked, sym);
         sym
     }
 
     fn resolve(&self, sym: Symbol) -> &'static str {
-        self.read().strings[sym.0.get() as usize - 1]
+        self.strings.get(sym.0.get() as usize - 1)
     }
 
     fn read(&self) -> std::sync::RwLockReadGuard<'_, Inner> {
