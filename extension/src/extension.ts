@@ -13,6 +13,7 @@ import { showStatus } from "./statusCommand";
 import { showSyntaxTree } from "./syntaxTree";
 import { formatProject, lintProject } from "./project";
 import { showReferences } from "./references";
+import { registerRenameFocus } from "./renameFocus";
 import { TEST_PROBLEMS, projectDir, runServerTask, runTests } from "./tests";
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -22,6 +23,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   createStatusBar(context);
   registerDecompiler(context);
   registerExplorerView(context);
+  registerRenameFocus(context);
 
   context.subscriptions.push(
     vscode.commands.registerCommand("papyrus.restartServer", restartServer),

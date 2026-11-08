@@ -4,6 +4,7 @@ import * as vscode from "vscode";
 import { LanguageClient, type LanguageClientOptions, type ServerOptions, State } from "vscode-languageclient/node";
 
 import { RestartRequest, StatusChangedNotification } from "./protocol";
+import { provideRenameEdits } from "./renameFocus";
 import { serverArgs, serverPath, settings } from "./settings";
 import { log, state } from "./state";
 import { refreshStatus, showStopped, updateStatus } from "./statusBar";
@@ -35,6 +36,8 @@ export async function startServer(context: vscode.ExtensionContext): Promise<voi
     synchronize: {
       fileEvents: vscode.workspace.createFileSystemWatcher("**/{*.psc,*.flg,papyrus.toml,papyrus.local.toml}"),
     },
+    // A rename of a script renames its file: keep the focus in the editor.
+    middleware: { provideRenameEdits },
   };
 
   const client = new LanguageClient("papyrus", "Papyrus Analyzer", serverOptions, clientOptions);
