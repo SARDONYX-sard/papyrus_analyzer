@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 
 use papyrus_ide::{
+    CheckedBodies,
     flags::FlagTargets,
     hir::Body,
     index::{TypeRef, doc_ranges},
@@ -44,13 +45,17 @@ pub(crate) struct SourceInfo {
     pub(crate) modified: i64,
 }
 
+/// Assembles the script of `sema`, whose bodies `diagnostics_with_bodies`
+/// already lowered and type checked (`bodies`).
 pub(crate) fn assemble(
     sema: Sema<'_>,
+    bodies: CheckedBodies,
     source: &SourceInfo,
     options: &CompileOptions,
 ) -> PexFile<'static> {
     let mut a = Assembler {
         cx: ScriptCx::new(sema),
+        bodies,
         options,
         strings: StringTable::default(),
         debug: Vec::new(),
@@ -145,6 +150,8 @@ pub(crate) fn assemble(
 /// `'a` is the lifetime of the source text: names borrow it.
 struct Assembler<'o, 'a> {
     cx: ScriptCx<'a>,
+    /// Bodies the checks lowered, taken as they are compiled.
+    bodies: CheckedBodies,
     options: &'o CompileOptions,
     strings: StringTable,
     debug: Vec<DebugFunction>,
@@ -386,9 +393,14 @@ impl<'a> Assembler<'_, 'a> {
             (None, false, e.is_native(), user, e.param_list())
         };
         let sema = self.cx.sema;
-        let ir = match Body::lower(&sema, node) {
-            Some(body) => {
-                let types = typeck::check_body(&sema, &body);
+        // Lowered by the checks, unless they skipped the bodies.
+        let checked = self.bodies.take(node).or_else(|| {
+            let body = Body::lower(&sema, node)?;
+            let types = typeck::check_body(&sema, &body);
+            Some((body, types))
+        });
+        let ir = match checked {
+            Some((body, types)) => {
                 let mut ir = codegen::function(&mut self.cx, &body, &types);
                 let name = node.children().find_map(ast::Name::cast).map_or("", |n| n.text());
                 log::debug!(

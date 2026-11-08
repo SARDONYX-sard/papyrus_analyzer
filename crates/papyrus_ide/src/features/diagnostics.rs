@@ -10,7 +10,7 @@
 
 use papyrus_intern::Name;
 use papyrus_parser::{
-    SyntaxKind, TextRange,
+    SyntaxKind, SyntaxNode, TextRange, TextSize,
     ast::{self, AstNode},
 };
 use rustc_hash::FxHashMap;
@@ -19,8 +19,10 @@ use super::in_body;
 use crate::{
     FileId, Workspace,
     flags::{FlagTable, FlagTargets},
+    hir::Body,
     index::MemberKind,
     sema::{Builtin, FileSource, Sema, Ty},
+    typeck::TypeckResult,
 };
 
 /// The codes of the diagnostics of the compiler checks, errors the official
@@ -135,19 +137,8 @@ impl Diagnostic {
 
 /// All diagnostics of a file.
 pub fn diagnostics(ws: &Workspace, file: FileId) -> Vec<Diagnostic> {
-    let data = ws.file(file);
-    let (src, errors) = match &data.open {
-        Some(doc) => (FileSource::load(ws, file), doc.errors.to_vec()),
-        None => match ws.text(file) {
-            Some(text) => {
-                let (src, errors) = FileSource::parse(text);
-                (Some(src), errors)
-            }
-            None => (None, Vec::new()),
-        },
-    };
-    match src {
-        Some(src) => diagnostics_of(ws, file, &src, &errors),
+    match FileSource::load_with_errors(ws, file) {
+        Some((src, errors)) => diagnostics_of(ws, file, &src, &errors),
         None => Vec::new(),
     }
 }
@@ -159,6 +150,42 @@ pub fn diagnostics_of(
     file: FileId,
     src: &FileSource,
     syntax_errors: &[papyrus_parser::SyntaxError],
+) -> Vec<Diagnostic> {
+    check(ws, file, src, syntax_errors, None)
+}
+
+/// The function and event bodies of a file, lowered and type checked by
+/// [`diagnostics_with_bodies`]: the compiler needs them too, and lowering a
+/// body is the costly part of the checks.
+#[derive(Default)]
+pub struct CheckedBodies(FxHashMap<TextSize, (Body, TypeckResult)>);
+
+impl CheckedBodies {
+    /// The body of the `FUNCTION` or `EVENT` node `node`, when it was checked
+    /// (not when the file has syntax errors or the game scripts are unknown).
+    pub fn take(&mut self, node: SyntaxNode<'_>) -> Option<(Body, TypeckResult)> {
+        self.0.remove(&node.text_range().start())
+    }
+}
+
+/// Like [`diagnostics_of`], also keeping the checked bodies.
+pub fn diagnostics_with_bodies(
+    ws: &Workspace,
+    file: FileId,
+    src: &FileSource,
+    syntax_errors: &[papyrus_parser::SyntaxError],
+) -> (Vec<Diagnostic>, CheckedBodies) {
+    let mut bodies = CheckedBodies::default();
+    let diagnostics = check(ws, file, src, syntax_errors, Some(&mut bodies));
+    (diagnostics, bodies)
+}
+
+fn check(
+    ws: &Workspace,
+    file: FileId,
+    src: &FileSource,
+    syntax_errors: &[papyrus_parser::SyntaxError],
+    bodies: Option<&mut CheckedBodies>,
 ) -> Vec<Diagnostic> {
     let mut out: Vec<Diagnostic> =
         syntax_errors.iter().map(|e| Diagnostic::error(e.range(), "syntax", e.message())).collect();
@@ -175,7 +202,7 @@ pub fn diagnostics_of(
     // Name resolution on broken code is noisy; fix the syntax first.
     if !has_syntax_errors && ws.script(Name::new("Form")).is_some() {
         check_names(sema, &mut out);
-        check_types(sema, &mut out);
+        check_types(sema, &mut out, bodies);
     }
     out.sort_by_key(|d| (d.range.start(), d.severity));
     out
@@ -529,17 +556,20 @@ const TYPE_CODES: &[&str] = &[
     "unexpected-return-value",
 ];
 
-/// Type checks bodies.
-fn check_types(sema: &Sema<'_>, out: &mut Vec<Diagnostic>) {
+/// Type checks bodies; keeps them in `bodies` when given.
+fn check_types(sema: &Sema<'_>, out: &mut Vec<Diagnostic>, mut bodies: Option<&mut CheckedBodies>) {
     for node in sema.root.descendants() {
         if !matches!(node.kind(), SyntaxKind::FUNCTION | SyntaxKind::EVENT) {
             continue;
         }
-        let Some(body) = crate::hir::Body::lower(sema, node) else { continue };
+        let Some(body) = Body::lower(sema, node) else { continue };
         let result = crate::typeck::check_body(sema, &body);
         out.extend(
-            result.errors.into_iter().map(|e| Diagnostic::error(e.range, e.code, e.message)),
+            result.errors.iter().map(|e| Diagnostic::error(e.range, e.code, e.message.clone())),
         );
+        if let Some(bodies) = bodies.as_deref_mut() {
+            bodies.0.insert(node.text_range().start(), (body, result));
+        }
     }
 }
 

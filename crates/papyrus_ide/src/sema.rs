@@ -229,6 +229,20 @@ impl FileSource {
         Some(FileSource::from_text(ws.text(file)?))
     }
 
+    /// Like [`FileSource::load`], with the syntax errors: for checking the
+    /// file and then working on it without parsing it again.
+    pub fn load_with_errors(
+        ws: &Workspace,
+        file: FileId,
+    ) -> Option<(FileSource, Vec<papyrus_parser::SyntaxError>)> {
+        let data = ws.file(file);
+        if let Some(doc) = &data.open {
+            let src = FileSource { text: doc.text.clone(), tree: doc.tree.clone() };
+            return Some((src, doc.errors.to_vec()));
+        }
+        Some(FileSource::parse(ws.text(file)?))
+    }
+
     /// Parses `text`.
     pub fn from_text(text: Arc<str>) -> FileSource {
         FileSource::parse(text).0
@@ -415,24 +429,8 @@ impl<'a> Sema<'a> {
 
     /// Resolves a value name at `node`.
     pub fn resolve_value(&self, name: Name, node: SyntaxNode<'a>) -> Option<Def> {
-        let offset = node.text_range().start();
-        // The compiler hoists locals to their block: a variable declared later
-        // in an enclosing block is visible too, but earlier ones win.
-        let local =
-            self.locals_at(node, offset).into_iter().rev().find(|l| l.0 == name).or_else(|| {
-                self.locals_at(node, TextSize::new(u32::MAX))
-                    .into_iter()
-                    .rev()
-                    .find(|l| l.0 == name)
-            });
-        if let Some(local) = local {
-            return Some(Def::Local {
-                file: self.file,
-                name: local.0,
-                range: local.1,
-                ty: local.2,
-                kind: local.3,
-            });
+        if let Some(local) = self.find_local(name, node) {
+            return Some(local);
         }
         let own = match self.script_name() {
             Some(script) => self.lookup_member(script, name, Want::Value { private: true }),
@@ -476,6 +474,73 @@ impl<'a> Sema<'a> {
             }
             Ty::Value(_) | Ty::None => None,
         }
+    }
+
+    /// The local variable or parameter `name` seen at `node`.
+    ///
+    /// The compiler hoists locals to their block: a variable declared later
+    /// in an enclosing block is visible too, but earlier ones win. So the
+    /// scopes are searched from the innermost (blocks, then the parameters)
+    /// for the last declaration before `node`; failing that, for the last
+    /// declaration of the innermost scope declaring `name` at all. This is
+    /// [`Sema::locals_at`] searched in reverse, twice, without building it.
+    pub fn find_local(&self, name: Name, node: SyntaxNode<'a>) -> Option<Def> {
+        let offset = node.text_range().start();
+        let is_name = |n: &str| n.eq_ignore_ascii_case(name.as_str());
+        // A declaration: its name, type and kind.
+        type Decl<'n> = (ast::Name<'n>, Option<ast::Type<'n>>, LocalKind);
+        let mut before: Option<Decl<'a>> = None;
+        let mut anywhere: Option<Decl<'a>> = None;
+        for anc in std::iter::once(node).chain(node.ancestors()) {
+            // The last declaration of `name` in this scope, before `node` and
+            // anywhere.
+            let mut scope_before = None;
+            let mut scope_anywhere = None;
+            // Parameters are visible everywhere in the function.
+            let mut see = |decl: Decl<'a>| {
+                if decl.2 == LocalKind::Parameter || decl.0.syntax().text_range().end() <= offset {
+                    scope_before = Some(decl);
+                }
+                scope_anywhere = Some(decl);
+            };
+            let last_scope = match anc.kind() {
+                SyntaxKind::BLOCK => {
+                    for var in anc.children().filter_map(ast::VarDecl::cast) {
+                        if let Some(n) = var.name().filter(|n| is_name(n.text())) {
+                            see((n, var.ty(), LocalKind::Variable));
+                        }
+                    }
+                    false
+                }
+                SyntaxKind::FUNCTION | SyntaxKind::EVENT => {
+                    let list =
+                        anc.child_node(SyntaxKind::PARAM_LIST).and_then(ast::ParamList::cast);
+                    for p in list.into_iter().flat_map(|l| l.params()) {
+                        if let Some(n) = p.name().filter(|n| is_name(n.text())) {
+                            see((n, p.ty(), LocalKind::Parameter));
+                        }
+                    }
+                    true
+                }
+                _ => continue,
+            };
+            if scope_before.is_some() {
+                before = scope_before;
+                break;
+            }
+            anywhere = anywhere.or(scope_anywhere);
+            if last_scope {
+                break;
+            }
+        }
+        let (n, ty, kind) = before.or(anywhere)?;
+        Some(Def::Local {
+            file: self.file,
+            name: Name::new(n.text()),
+            range: n.syntax().text_range(),
+            ty: ty.and_then(TypeRef::from_ast),
+            kind,
+        })
     }
 
     /// Local variables and parameters visible at `offset`, outermost first.

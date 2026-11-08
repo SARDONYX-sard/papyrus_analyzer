@@ -59,22 +59,25 @@ pub fn compile(
     let path = &ws.file(file).path;
     let start = std::time::Instant::now();
     log::info!("checking {}", path.display());
-    let errors: Vec<Diagnostic> = papyrus_ide::diagnostics(ws, file)
-        .into_iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
+    // Read, parsed, lowered and type checked once, for the checks and the
+    // code.
+    let (source, syntax_errors) =
+        FileSource::load_with_errors(ws, file).ok_or(CompileError::Unreadable)?;
+    let (diagnostics, bodies) =
+        papyrus_ide::diagnostics_with_bodies(ws, file, &source, &syntax_errors);
+    let errors: Vec<Diagnostic> =
+        diagnostics.into_iter().filter(|d| d.severity == Severity::Error).collect();
     if !errors.is_empty() {
         log::info!("{} errors in {}", errors.len(), path.display());
         return Err(CompileError::Diagnostics(errors));
     }
     log::debug!("checked in {:?}", start.elapsed());
-    let source = FileSource::load(ws, file).ok_or(CompileError::Unreadable)?;
     let sema = source.sema(ws, file);
     let info = script::SourceInfo {
         file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         modified: modified_time(path),
     };
-    let pex = script::assemble(sema, &info, options);
+    let pex = script::assemble(sema, bodies, &info, options);
     log::info!(
         "compiled {} in {:?} ({} strings)",
         sema.index.name_str(),
