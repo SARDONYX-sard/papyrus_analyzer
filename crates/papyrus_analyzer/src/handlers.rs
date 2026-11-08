@@ -399,8 +399,9 @@ impl Server {
         Some(WorkspaceSymbolResponse::Flat(infos))
     }
 
-    /// `▶ Compile` and `Compile All` above the `ScriptName` line, like the
-    /// `▶ Run Test` lenses of rust-analyzer. None without `papyrus.toml`.
+    /// `▶ Compile` above the `ScriptName` line, or `▶ Run Tests` for the test
+    /// scripts (`[test] sources`), never compiled: they import the built-in
+    /// `PapyrusAnalyzer`, unknown to the compiler.
     pub(crate) fn code_lens(&mut self, params: CodeLensParams) -> Option<Vec<CodeLens>> {
         let file = self.file(&params.text_document.uri).ok()?;
         let lines = Lines::of(&self.ws, file)?;
@@ -417,8 +418,11 @@ impl Server {
             }),
             data: None,
         };
-        let mut lenses =
-            vec![lens("▶\u{fe0e} Compile", "papyrus.compile", Some(vec![uri.clone()]))];
+        let mut lenses = vec![if self.ws.is_test_file(file) {
+            lens("▶\u{fe0e} Run Tests", "papyrus.runTests", Some(vec![uri.clone()]))
+        } else {
+            lens("▶\u{fe0e} Compile", "papyrus.compile", Some(vec![uri.clone()]))
+        }];
         // `overridden in N scripts` above functions child scripts replace;
         // the client turns the arguments into a references view.
         let mut cache = FxHashMap::default();

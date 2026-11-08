@@ -1,7 +1,9 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import { isWithin } from "../paths";
 import { state } from "../state";
+import { runTests } from "../tests";
 import { runCompile } from "./task";
 
 /** Key of the scripts picked last, in the workspace state. */
@@ -24,7 +26,16 @@ export async function compileCommand(arg?: string | vscode.Uri, selection?: vsco
     return;
   }
   uris = uris.filter((u) => u.fsPath.toLowerCase().endsWith(".psc"));
-  await runCompile({ type: "papyrus", files: uris.map((u) => u.fsPath) });
+  // Test scripts (`[test] sources`) are never compiled: they import the
+  // built-in `PapyrusAnalyzer`, unknown to the compiler. Alone, their tests
+  // run instead, like their button in the explorer.
+  const isTest = (u: vscode.Uri) => state.testSources.some((dir) => isWithin(u.fsPath, dir));
+  const scripts = uris.filter((u) => !isTest(u));
+  if (scripts.length === 0 && uris.length > 0) {
+    await runTests(uris.map((u) => u.fsPath));
+    return;
+  }
+  await runCompile({ type: "papyrus", files: scripts.map((u) => u.fsPath) });
 }
 
 /** `papyrus.compileAll`: every script of `[build] sources`. */
