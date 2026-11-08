@@ -9,7 +9,7 @@ use papyrus_pex::{
     pex::{StringId, VariableValue},
 };
 
-use crate::ir::Operand;
+use crate::codegen::ir::Operand;
 
 /// Interns the strings of a file.
 ///

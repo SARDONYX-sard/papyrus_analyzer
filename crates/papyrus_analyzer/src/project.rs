@@ -793,9 +793,11 @@ fn innermost<'a>(projects: &'a [Project], path: &Path) -> Option<&'a Project> {
 /// A compiler process loads the import directories before compiling, which
 /// takes longer than compiling a script: one process per script makes a
 /// folder of a thousand scripts take minutes. The built-in compiler (`exe
-/// compile <script> <arguments>`) takes several scripts, so the commands that
-/// differ only by their script (the scripts of one directory) are merged,
-/// as long as the command line stays short enough for Windows.
+/// compile <script>... <arguments>`) takes several scripts, so the commands
+/// that differ only by their script (the scripts of one directory) are
+/// merged: into `exe compile <dir> -all <arguments>` when they are all the
+/// scripts of the directory, else into commands short enough for the command
+/// line of Windows.
 fn batch_builtin(
     commands: Vec<papyrus_project::CompileCommand>,
     exe: &Path,
@@ -804,33 +806,90 @@ fn batch_builtin(
     const MAX_LINE: usize = 24_000;
     // Where the script is in the arguments of the built-in compiler.
     const SCRIPT: usize = 1;
-    let mut out: Vec<(papyrus_project::CompileCommand, Vec<String>)> = Vec::new();
-    // The arguments but the script, to the batch open for them.
-    let mut open: rustc_hash::FxHashMap<(PathBuf, PathBuf, Vec<String>), usize> =
+    // In order: the commands of an external compiler as they are, and the
+    // built-in ones without their script, with the scripts of all the
+    // commands that differ only by it.
+    let mut groups: Vec<(papyrus_project::CompileCommand, Vec<String>, bool)> = Vec::new();
+    let mut by_key: rustc_hash::FxHashMap<(PathBuf, PathBuf, Vec<String>), usize> =
         Default::default();
     for mut command in commands {
         let builtin = command.program == exe && command.args.len() > SCRIPT;
         if !builtin {
             let script = command.args.iter().find(|a| a.to_ascii_lowercase().ends_with(".psc"));
             let scripts = script.cloned().into_iter().collect();
-            out.push((command, scripts));
+            groups.push((command, scripts, false));
             continue;
         }
         let script = command.args.remove(SCRIPT);
         let key = (command.cwd.clone(), command.output.clone(), command.args.clone());
-        if let Some(&i) = open.get(&key) {
-            let (batch, scripts) = &mut out[i];
-            if batch.to_string().len() + script.len() + 3 < MAX_LINE {
-                batch.args.insert(SCRIPT + scripts.len(), script.clone());
-                scripts.push(script);
-                continue;
+        match by_key.get(&key) {
+            Some(&i) => groups[i].1.push(script),
+            None => {
+                by_key.insert(key, groups.len());
+                groups.push((command, vec![script], true));
             }
         }
-        command.args.insert(SCRIPT, script.clone());
-        open.insert(key, out.len());
-        out.push((command, vec![script]));
+    }
+    let mut out = Vec::new();
+    for (command, scripts, builtin) in groups {
+        if !builtin {
+            out.push((command, scripts));
+            continue;
+        }
+        if let Some(dir) = whole_directory(&scripts) {
+            let mut command = command;
+            command.args.splice(SCRIPT..SCRIPT, [dir.display().to_string(), "-all".to_owned()]);
+            out.push((command, scripts));
+            continue;
+        }
+        // Chunks of scripts that keep the command line short enough.
+        let base = command.to_string().len();
+        let mut chunk: Vec<String> = Vec::new();
+        let mut len = base;
+        for script in scripts {
+            if !chunk.is_empty() && len + script.len() + 3 > MAX_LINE {
+                out.push(with_scripts(&command, std::mem::take(&mut chunk)));
+                len = base;
+            }
+            len += script.len() + 3;
+            chunk.push(script);
+        }
+        out.push(with_scripts(&command, chunk));
     }
     out
+}
+
+/// `command` with `scripts` where its script goes.
+fn with_scripts(
+    command: &papyrus_project::CompileCommand,
+    scripts: Vec<String>,
+) -> (papyrus_project::CompileCommand, Vec<String>) {
+    let mut command = command.clone();
+    command.args.splice(1..1, scripts.iter().cloned());
+    (command, scripts)
+}
+
+/// The directory of `scripts` when they are all the scripts of one directory
+/// (what `-all` compiles), and several.
+fn whole_directory(scripts: &[String]) -> Option<PathBuf> {
+    if scripts.len() < 2 {
+        return None;
+    }
+    let dir = Path::new(&scripts[0]).parent()?;
+    if scripts.iter().any(|s| Path::new(s).parent() != Some(dir)) {
+        return None;
+    }
+    let in_dir = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| {
+            e.file_type().is_ok_and(|t| !t.is_dir())
+                && Path::new(&e.file_name())
+                    .extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case("psc"))
+        })
+        .count();
+    (in_dir == scripts.len()).then(|| dir.to_path_buf())
 }
 
 #[cfg(test)]
@@ -869,5 +928,28 @@ mod tests {
         );
         assert_eq!(batches[0].1, ["/s/A.psc", "/s/C.psc"]);
         assert_eq!(batches[2].1, ["/s/D.psc"]);
+    }
+
+    #[test]
+    fn all_the_scripts_of_a_directory_compile_with_all() {
+        let dir = std::env::temp_dir().join(format!("pa-batch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let scripts: Vec<String> = ["A.psc", "B.psc"]
+            .iter()
+            .map(|name| {
+                let path = dir.join(name);
+                std::fs::write(&path, "ScriptName X\n").unwrap();
+                path.display().to_string()
+            })
+            .collect();
+        let exe = Path::new("/pa");
+        let all = batch_builtin(scripts.iter().map(|s| command("/pa", s, "/out")).collect(), exe);
+        let one = batch_builtin(vec![command("/pa", &scripts[0], "/out")], exe);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let expected = format!("compile {} -all -import=a;b", dir.display());
+        assert_eq!(all[0].0.args.join(" "), expected);
+        assert_eq!(all[0].1, scripts);
+        // A part of the directory names its scripts.
+        assert_eq!(one[0].0.args[1], scripts[0]);
     }
 }

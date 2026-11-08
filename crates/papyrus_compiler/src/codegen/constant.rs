@@ -1,6 +1,39 @@
-//! Values of literals, as written in the source.
+//! Constants: the values of literals as written in the source, and their
+//! conversions at compile time.
 
-use crate::ir::Operand;
+use papyrus_ide::index::{BaseType, TypeRef};
+
+use crate::codegen::ir::Operand;
+
+/// Converts a constant to `to` at compile time, like the official compiler
+/// does for default values. `None` when the conversion is not exact.
+pub(crate) fn convert(value: &Operand, to: TypeRef) -> Option<Operand> {
+    // Arrays and objects only take `None`.
+    let scalar = if to.array { None } else { Some(to.base) };
+    Some(match (value, scalar) {
+        (Operand::Var(_), _) => return None,
+        (Operand::Int(i), Some(BaseType::Float)) => Operand::Float(*i as f32),
+        (Operand::Float(f), Some(BaseType::Int)) => Operand::Int(*f as i32),
+        (Operand::Int(i), Some(BaseType::String)) => Operand::Str(i.to_string()),
+        (Operand::Bool(b), Some(BaseType::String)) => {
+            Operand::Str(if *b { "True" } else { "False" }.to_owned())
+        }
+        (Operand::None, Some(BaseType::String)) => Operand::Str("None".to_owned()),
+        (Operand::Int(i), Some(BaseType::Bool)) => Operand::Bool(*i != 0),
+        (Operand::Float(f), Some(BaseType::Bool)) => Operand::Bool(*f != 0.0),
+        (Operand::Str(s), Some(BaseType::Bool)) => Operand::Bool(!s.is_empty()),
+        (Operand::None, Some(BaseType::Bool)) => Operand::Bool(false),
+        (Operand::Bool(b), Some(BaseType::Int)) => Operand::Int(*b as i32),
+        (Operand::Bool(b), Some(BaseType::Float)) => Operand::Float(*b as i32 as f32),
+        (v @ Operand::Int(_), Some(BaseType::Int))
+        | (v @ Operand::Float(_), Some(BaseType::Float))
+        | (v @ Operand::Str(_), Some(BaseType::String))
+        | (v @ Operand::Bool(_), Some(BaseType::Bool)) => v.clone(),
+        (Operand::None, Some(BaseType::Int | BaseType::Float)) => return None,
+        (Operand::None, _) => Operand::None,
+        _ => return None,
+    })
+}
 
 /// Parses a literal: an integer (decimal or `0x` hexadecimal), a float, a
 /// string, `True`, `False` or `None`, optionally negated.

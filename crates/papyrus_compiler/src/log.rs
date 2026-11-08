@@ -52,7 +52,7 @@ pub enum LogTarget {
 /// Installs the logger. `filter` uses the syntax of `RUST_LOG`, e.g. `debug`
 /// or `papyrus_compiler=trace`.
 #[cfg(feature = "log")]
-pub fn init(target: &LogTarget, filter: &str) -> Result<(), String> {
+pub(crate) fn init(target: &LogTarget, filter: &str) -> Result<(), String> {
     use tracing_subscriber::EnvFilter;
 
     let filter = EnvFilter::try_new(filter).map_err(|e| format!("invalid log filter: {e}"))?;
@@ -76,6 +76,6 @@ pub fn init(target: &LogTarget, filter: &str) -> Result<(), String> {
 
 /// Installs the logger: not available without the `log` feature.
 #[cfg(not(feature = "log"))]
-pub fn init(_target: &LogTarget, _filter: &str) -> Result<(), String> {
+pub(crate) fn init(_target: &LogTarget, _filter: &str) -> Result<(), String> {
     Err("this build has no logs (feature `log`)".to_owned())
 }

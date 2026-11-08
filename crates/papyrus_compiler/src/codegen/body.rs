@@ -30,16 +30,16 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use papyrus_ide::{
     FileId, LineIndex, TextRange,
     hir::{Arg, BinaryOp, Body, BodyKind, Expr, ExprId, Literal, LocalId, Stmt, StmtId, UnaryOp},
-    index::{BaseType, Flags, MemberKind, TypeRef},
+    index::{Flags, MemberKind, TypeRef},
     sema::{Builtin, Def, Sema},
     typeck::{Ty, TypeckResult},
 };
 use papyrus_intern::Name;
 use papyrus_pex::pex::OpCode;
 
-use crate::{
+use crate::codegen::{
+    constant,
     ir::{FunctionIr, Inst, Label, Operand, Slot},
-    literal,
 };
 
 /// `self`: the object a function runs on.
@@ -141,36 +141,6 @@ impl VTy {
     fn is(self, other: VTy) -> bool {
         self.slot_type() == other.slot_type()
     }
-}
-
-/// Converts a constant to `to` at compile time, like the official compiler
-/// does for default values. `None` when the conversion is not exact.
-pub(crate) fn convert_const(value: &Operand, to: TypeRef) -> Option<Operand> {
-    // Arrays and objects only take `None`.
-    let scalar = if to.array { None } else { Some(to.base) };
-    Some(match (value, scalar) {
-        (Operand::Var(_), _) => return None,
-        (Operand::Int(i), Some(BaseType::Float)) => Operand::Float(*i as f32),
-        (Operand::Float(f), Some(BaseType::Int)) => Operand::Int(*f as i32),
-        (Operand::Int(i), Some(BaseType::String)) => Operand::Str(i.to_string()),
-        (Operand::Bool(b), Some(BaseType::String)) => {
-            Operand::Str(if *b { "True" } else { "False" }.to_owned())
-        }
-        (Operand::None, Some(BaseType::String)) => Operand::Str("None".to_owned()),
-        (Operand::Int(i), Some(BaseType::Bool)) => Operand::Bool(*i != 0),
-        (Operand::Float(f), Some(BaseType::Bool)) => Operand::Bool(*f != 0.0),
-        (Operand::Str(s), Some(BaseType::Bool)) => Operand::Bool(!s.is_empty()),
-        (Operand::None, Some(BaseType::Bool)) => Operand::Bool(false),
-        (Operand::Bool(b), Some(BaseType::Int)) => Operand::Int(*b as i32),
-        (Operand::Bool(b), Some(BaseType::Float)) => Operand::Float(*b as i32 as f32),
-        (v @ Operand::Int(_), Some(BaseType::Int))
-        | (v @ Operand::Float(_), Some(BaseType::Float))
-        | (v @ Operand::Str(_), Some(BaseType::String))
-        | (v @ Operand::Bool(_), Some(BaseType::Bool)) => v.clone(),
-        (Operand::None, Some(BaseType::Int | BaseType::Float)) => return None,
-        (Operand::None, _) => Operand::None,
-        _ => return None,
-    })
 }
 
 /// A computed value.
@@ -695,7 +665,7 @@ impl<'c, 'a> FnGen<'c, 'a> {
         let text = self.sema().text.get(usize::from(range.start())..usize::from(range.end()));
         match lit {
             Literal::None => Operand::None,
-            _ => text.and_then(literal::parse).unwrap_or(Operand::None),
+            _ => text.and_then(constant::parse).unwrap_or(Operand::None),
         }
     }
 
@@ -997,8 +967,8 @@ impl<'c, 'a> FnGen<'c, 'a> {
                 default: p
                     .default
                     .as_deref()
-                    .and_then(literal::parse)
-                    .map(|d| p.ty.and_then(|t| convert_const(&d, t)).unwrap_or(d)),
+                    .and_then(constant::parse)
+                    .map(|d| p.ty.and_then(|t| constant::convert(&d, t)).unwrap_or(d)),
             })
             .collect();
         let ret = match (m.kind, m.ty) {

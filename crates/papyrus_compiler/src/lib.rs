@@ -1,24 +1,33 @@
 //! Compiler of Papyrus scripts (Skyrim) to `.pex` files.
 //!
-//! The front end is the one of the language server ([`papyrus_ide`]): the
-//! script is parsed, checked ([`papyrus_ide::diagnostics`]), lowered to HIR
-//! and type checked. Each body then goes through:
+//! The public API is small: [`compile`] a script of a workspace that
+//! [`loader`] filled, or run the command line of `PapyrusCompiler.exe`
+//! ([`cli`]). Inside, a script goes through:
 //!
-//! 1. [`codegen`]: HIR to [`ir::FunctionIr`], instructions with labels and
-//!    named operands, following the conventions of the official compiler;
-//! 2. [`opt`]: optional optimization passes on the IR;
-//! 3. assembly: labels to jump offsets, names to the string table, and the
-//!    debug line numbers.
+//! 1. the front end of the language server ([`papyrus_ide`]): parsed,
+//!    checked ([`papyrus_ide::diagnostics`]), lowered to HIR and type
+//!    checked;
+//! 2. `codegen`: each function body to instructions with labels and named
+//!    operands (`codegen::ir`), following the conventions of the official
+//!    compiler, then the optional optimizations (`codegen::opt`);
+//! 3. `assemble`: the declarations and the bodies to a `.pex` file: labels to
+//!    jump offsets, names to the string table, and the debug line numbers.
+//!
+//! ```text
+//! src/
+//!   lib.rs        compile(): the steps above, for one script
+//!   loader.rs     the scripts a compilation needs, in a workspace
+//!   codegen/      a function body to instructions
+//!   assemble/     a script to a .pex file
+//!   cli/          the command line
+//!   log.rs        progress logs (`-log`)
+//! ```
 
+mod assemble;
 pub mod cli;
 mod codegen;
-pub mod ir;
-mod literal;
 pub mod loader;
-pub mod log;
-pub mod opt;
-mod script;
-mod strings;
+mod log;
 
 use papyrus_ide::{Diagnostic, FileId, Severity, Workspace, sema::FileSource};
 use papyrus_pex::PexFile;
@@ -26,7 +35,8 @@ use papyrus_pex::PexFile;
 /// Options of [`compile`].
 #[derive(Clone, Debug)]
 pub struct CompileOptions {
-    /// Run the optimization passes of [`opt`].
+    /// Run the optimization passes (like `-optimize` of the official
+    /// compiler).
     pub optimize: bool,
     /// Write line numbers, needed for script errors in the game logs.
     pub debug_info: bool,
@@ -71,14 +81,14 @@ pub fn compile(
     }
     log::debug!("checked in {:?}", start.elapsed());
     let sema = source.sema(ws, file);
-    let info = script::SourceInfo {
+    let info = assemble::SourceInfo {
         file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         modified: ws
             .modified(file)
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map_or(0, |d| d.as_secs() as i64),
     };
-    let pex = script::assemble(sema, bodies, &info, options);
+    let pex = assemble::assemble(sema, bodies, &info, options);
     log::info!(
         "compiled {} in {:?} ({} strings)",
         sema.index.name_str(),

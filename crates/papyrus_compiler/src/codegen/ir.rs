@@ -2,7 +2,7 @@
 //!
 //! Code generation produces one [`FunctionIr`] per function: instructions
 //! with symbolic labels and operands by name. Optimization passes
-//! ([`crate::opt`]) rewrite it, and the assembler (`script.rs`) resolves
+//! (`super::opt`) rewrite it, and the assembler (`crate::assemble`) resolves
 //! labels to the relative jump offsets of the `.pex` format with
 //! [`FunctionIr::label_positions`].
 //!
@@ -17,7 +17,7 @@ use papyrus_pex::pex::OpCode;
 
 /// A value used by an instruction.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Operand {
+pub(crate) enum Operand {
     /// A variable, parameter, property or script name, `self`, `::NoneVar`, ...
     Var(Name),
     /// `None`
@@ -34,17 +34,17 @@ pub enum Operand {
 
 impl Operand {
     /// A variable operand.
-    pub fn var(name: &str) -> Operand {
+    pub(crate) fn var(name: &str) -> Operand {
         Operand::Var(Name::new(name))
     }
 
     /// Whether the operand is a constant.
-    pub fn is_const(&self) -> bool {
+    pub(crate) fn is_const(&self) -> bool {
         !matches!(self, Operand::Var(_))
     }
 
     /// The variable name, for variable operands.
-    pub fn as_var(&self) -> Option<Name> {
+    pub(crate) fn as_var(&self) -> Option<Name> {
         match self {
             Operand::Var(v) => Some(*v),
             _ => None,
@@ -54,11 +54,11 @@ impl Operand {
 
 /// A jump target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Label(pub u32);
+pub(crate) struct Label(pub(crate) u32);
 
 /// An instruction of the IR.
 #[derive(Clone, Debug, PartialEq)]
-pub enum Inst {
+pub(crate) enum Inst {
     /// An instruction without jump: the opcode and all its arguments (for
     /// calls, the argument count is added when lowering).
     Op {
@@ -82,29 +82,29 @@ pub enum Inst {
 
 /// A typed slot of a function: a parameter, a local or a temporary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Slot {
+pub(crate) struct Slot {
     /// The name.
-    pub name: Name,
+    pub(crate) name: Name,
     /// The type; `None` for the `None` type (`::NoneVar`).
-    pub ty: Option<TypeRef>,
+    pub(crate) ty: Option<TypeRef>,
 }
 
 impl Slot {
     /// A slot named `name` of type `ty`.
-    pub fn new(name: &str, ty: Option<TypeRef>) -> Slot {
+    pub(crate) fn new(name: &str, ty: Option<TypeRef>) -> Slot {
         Slot { name: Name::new(name), ty }
     }
 }
 
 /// The code of one function, event or property accessor.
 #[derive(Clone, Debug, Default)]
-pub struct FunctionIr {
+pub(crate) struct FunctionIr {
     /// Parameters.
-    pub params: Vec<Slot>,
+    pub(crate) params: Vec<Slot>,
     /// Locals and temporaries, in creation order.
-    pub locals: Vec<Slot>,
+    pub(crate) locals: Vec<Slot>,
     /// Instructions with their source line (0 when unknown).
-    pub code: Vec<(Inst, u32)>,
+    pub(crate) code: Vec<(Inst, u32)>,
 }
 
 impl fmt::Display for Operand {
@@ -148,13 +148,13 @@ impl fmt::Display for FunctionIr {
 
 impl FunctionIr {
     /// The number of instructions, labels excluded.
-    pub fn instruction_count(&self) -> usize {
+    pub(crate) fn instruction_count(&self) -> usize {
         self.code.iter().filter(|(i, _)| !matches!(i, Inst::Label(_))).count()
     }
 
     /// The instruction index of every label, by label number. A label that
     /// is never placed stands for the end of the code.
-    pub fn label_positions(&self) -> Vec<usize> {
+    pub(crate) fn label_positions(&self) -> Vec<usize> {
         let count = self
             .code
             .iter()

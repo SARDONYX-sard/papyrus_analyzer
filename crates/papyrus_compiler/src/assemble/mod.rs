@@ -29,12 +29,17 @@ use papyrus_pex::{
     },
 };
 
+mod strings;
+
 use crate::{
     CompileOptions,
-    codegen::{self, ScriptCx, convert_const},
-    ir::{FunctionIr, Inst, Operand, Slot},
-    literal, log, opt,
-    strings::StringTable,
+    assemble::strings::StringTable,
+    codegen::{
+        self, ScriptCx, constant,
+        ir::{FunctionIr, Inst, Operand, Slot},
+        opt,
+    },
+    log,
 };
 
 /// What the source file says about itself, for the header.
@@ -300,8 +305,8 @@ impl<'a> Assembler<'_, 'a> {
         let Some(init) = init else { return VariableValue::Null };
         let range = init.syntax().trimmed_range();
         let text = &self.text()[usize::from(range.start())..usize::from(range.end())];
-        let Some(value) = literal::parse(text) else { return VariableValue::Null };
-        let value = ty.and_then(|t| convert_const(&value, t)).unwrap_or(value);
+        let Some(value) = constant::parse(text) else { return VariableValue::Null };
+        let value = ty.and_then(|t| constant::convert(&value, t)).unwrap_or(value);
         self.strings.value(&value)
     }
 

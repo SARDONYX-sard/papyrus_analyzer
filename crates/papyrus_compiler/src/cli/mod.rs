@@ -27,20 +27,20 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod batch;
+mod diagnostics;
+mod targets;
+
 use std::{
-    io::IsTerminal,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use annotate_snippets::{AnnotationKind, Level, Renderer, Snippet};
-use papyrus_ide::{Diagnostic, FileId, Severity, Workspace};
-use rayon::prelude::*;
+use papyrus_ide::Workspace;
 
-use crate::{
-    CompileError, CompileOptions,
-    log::{self, LogTarget},
-};
+pub use crate::log::LogTarget;
+use crate::{CompileOptions, log};
+use targets::{find_in, resolve_target};
 
 /// The usage text.
 pub const USAGE: &str = "\
@@ -266,32 +266,13 @@ pub fn run_args(args: &Args) -> i32 {
     log::info!("{} scripts to compile", scripts.len());
     crate::loader::load(&mut ws, &scripts, &args.imports);
 
-    let terminal = std::io::stderr().is_terminal();
-    let format = args.diagnostics.unwrap_or(if terminal {
-        DiagnosticFormat::Human
-    } else {
-        DiagnosticFormat::Official
-    });
-    let renderer = if terminal { Renderer::styled() } else { Renderer::plain() };
     let output = args.output.clone().unwrap_or_else(|| cwd.clone());
     // Once, not per script.
     if let Err(e) = std::fs::create_dir_all(&output) {
         eprintln!("{}: {e}", output.display());
         return 1;
     }
-    let cx = BatchCx { ws: &ws, args, output: &output, format, renderer: &renderer };
-    let jobs: Vec<(&PathBuf, FileId)> =
-        scripts.iter().filter_map(|path| Some((path, ws.file_id(path)?))).collect();
-    // Compiled and written on all cores; `collect` keeps the order of the
-    // reports.
-    let reports: Vec<Report> =
-        jobs.par_iter().map(|&(path, file)| cx.compile(path, file)).collect();
-    let mut failed = 0;
-    for report in reports {
-        print!("{}", report.stdout);
-        eprint!("{}", report.stderr);
-        failed += usize::from(report.failed);
-    }
+    let failed = batch::compile_all(&ws, &scripts, args, &output);
     if !args.quiet || failed > 0 {
         println!(
             "\nBatch compile of {} files finished. {} succeeded, {failed} failed.",
@@ -300,210 +281,6 @@ pub fn run_args(args: &Args) -> i32 {
         );
     }
     i32::from(failed > 0)
-}
-
-/// What every compilation of a batch shares.
-struct BatchCx<'a> {
-    ws: &'a Workspace,
-    args: &'a Args,
-    output: &'a Path,
-    format: DiagnosticFormat,
-    renderer: &'a Renderer,
-}
-
-/// What the compilation of one script prints, and whether it failed.
-#[derive(Default)]
-struct Report {
-    stdout: String,
-    stderr: String,
-    failed: bool,
-}
-
-impl BatchCx<'_> {
-    /// Compiles one script and writes its outputs. Prints nothing: scripts
-    /// compile in parallel, their reports are printed in order.
-    fn compile(&self, path: &Path, file: FileId) -> Report {
-        use std::fmt::Write as _;
-        let (ws, args) = (self.ws, self.args);
-        let mut r = Report::default();
-        if !args.quiet {
-            let _ = writeln!(r.stdout, "Compiling \"{}\"...", path.display());
-        }
-        match crate::compile(ws, file, &args.options) {
-            Ok(pex) => {
-                let name = ws.file(file).index.name_str();
-                match write_outputs(&pex, self.output, name, args, &mut r.stdout) {
-                    Ok(()) if !args.quiet => r.stdout.push_str("Compilation succeeded.\n"),
-                    Ok(()) => {}
-                    Err(e) => {
-                        let _ = writeln!(r.stderr, "{e}");
-                        r.failed = true;
-                    }
-                }
-            }
-            Err(CompileError::Unreadable) => {
-                let _ = writeln!(r.stderr, "{}: cannot read the file", path.display());
-                r.failed = true;
-            }
-            Err(CompileError::Diagnostics(diags)) => {
-                let text = ws.text(file).unwrap_or_default();
-                for d in &diags {
-                    let _ = match self.format {
-                        DiagnosticFormat::Human => {
-                            writeln!(r.stderr, "{}", render(self.renderer, ws, path, &text, d))
-                        }
-                        DiagnosticFormat::Official => {
-                            writeln!(r.stderr, "{}", render_official(path, &text, d))
-                        }
-                    };
-                }
-                let _ = writeln!(
-                    r.stderr,
-                    "No output generated for {}, compilation failed.",
-                    path.display()
-                );
-                r.failed = true;
-            }
-        }
-        r
-    }
-}
-
-fn write_outputs(
-    pex: &papyrus_pex::PexFile<'_>,
-    dir: &Path,
-    name: &str,
-    args: &Args,
-    stdout: &mut String,
-) -> Result<(), String> {
-    let asm = || papyrus_pex::disasm::disassemble(pex, Default::default());
-    if args.debug {
-        stdout.push_str(&asm());
-        stdout.push('\n');
-    }
-    if args.asm != AsmMode::None {
-        let path = dir.join(format!("{name}.pas"));
-        std::fs::write(&path, asm()).map_err(|e| format!("{}: {e}", path.display()))?;
-        log::info!("wrote {}", path.display());
-    }
-    if args.asm != AsmMode::Only {
-        let path = dir.join(format!("{name}.pex"));
-        let bytes = pex.to_bytes().map_err(|e| format!("{}: {e}", path.display()))?;
-        std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        log::info!("wrote {} ({} bytes)", path.display(), bytes.len());
-    }
-    Ok(())
-}
-
-/// The scripts named by a command line target.
-fn resolve_target(target: &str, args: &Args, cwd: &Path) -> Result<Vec<PathBuf>, String> {
-    if args.all {
-        let dir = find_in(Path::new(target), &args.imports, cwd);
-        if !dir.is_dir() {
-            return Err(format!("folder not found: {target}"));
-        }
-        let mut out = Vec::new();
-        // Like the official compiler, `-all` does not recurse.
-        collect(&dir, &mut out, false);
-        return Ok(out);
-    }
-    let mut file = PathBuf::from(target);
-    if file.extension().is_none() {
-        file.set_extension("psc");
-    }
-    let found = find_in(&file, &args.imports, cwd);
-    if found.is_file() {
-        Ok(vec![std::path::absolute(&found).unwrap_or(found)])
-    } else {
-        Err(format!("script not found: {target}"))
-    }
-}
-
-/// `path` as is when it exists, else the first match in the current
-/// directory and the import directories.
-fn find_in(path: &Path, imports: &[PathBuf], cwd: &Path) -> PathBuf {
-    if path.is_absolute() || path.exists() {
-        return path.to_path_buf();
-    }
-    std::iter::once(cwd)
-        .chain(imports.iter().map(PathBuf::as_path))
-        .map(|dir| dir.join(path))
-        .find(|p| p.exists())
-        .unwrap_or_else(|| path.to_path_buf())
-}
-
-/// A diagnostic with its source lines, and the related places (another
-/// definition, the declaration of a script...) as context annotations.
-fn render(renderer: &Renderer, ws: &Workspace, path: &Path, text: &str, d: &Diagnostic) -> String {
-    let level = match d.severity {
-        Severity::Error => Level::ERROR,
-        Severity::Warning => Level::WARNING,
-    };
-    let clamp = |text: &str, r: papyrus_ide::TextRange| {
-        let start = usize::from(r.start()).min(text.len());
-        start..usize::from(r.end()).clamp(start, text.len())
-    };
-    let path_text = path.display().to_string();
-    let file = ws.file_id(path);
-    // Related places of other files, with their text.
-    let others: Vec<(String, std::sync::Arc<str>, &papyrus_ide::Related)> = d
-        .related
-        .iter()
-        .filter(|r| Some(r.file) != file)
-        .filter_map(|r| Some((ws.file(r.file).path.display().to_string(), ws.text(r.file)?, r)))
-        .collect();
-    let mut snippet = Snippet::source(text)
-        .line_start(1)
-        .path(&path_text)
-        .annotation(AnnotationKind::Primary.span(clamp(text, d.range)).label(d.code));
-    for r in d.related.iter().filter(|r| Some(r.file) == file) {
-        snippet = snippet
-            .annotation(AnnotationKind::Context.span(clamp(text, r.range)).label(&r.message));
-    }
-    let mut group = level.primary_title(&d.message).element(snippet);
-    for (other_path, other_text, r) in &others {
-        group = group.element(
-            Snippet::source(&**other_text).line_start(1).path(other_path).annotation(
-                AnnotationKind::Context.span(clamp(other_text, r.range)).label(&r.message),
-            ),
-        );
-    }
-    renderer.render(&[group])
-}
-/// `file(line,col): message`, one-based, as `PapyrusCompiler.exe` prints.
-fn render_official(path: &Path, text: &str, d: &Diagnostic) -> String {
-    let start = usize::from(d.range.start()).min(text.len());
-    let before = &text[..text.floor_char_boundary(start)];
-    let line = before.matches('\n').count() + 1;
-    let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
-    format!("{}({line},{col}): {}", path.display(), d.message)
-}
-
-/// The `.psc` files of `path`.
-fn collect(path: &Path, out: &mut Vec<PathBuf>, recursive: bool) {
-    if path.is_file() {
-        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("psc")) {
-            // Absolute, so that a file reached from a target and from an
-            // import directory is the same file of the workspace.
-            out.push(std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()));
-        }
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(path) else { return };
-    // The type comes with the entry: no `stat` per file, which matters with
-    // thousands of scripts.
-    let mut entries: Vec<(PathBuf, bool)> =
-        entries.flatten().map(|e| (e.path(), e.file_type().is_ok_and(|t| t.is_dir()))).collect();
-    entries.sort();
-    for (entry, is_dir) in entries {
-        if is_dir {
-            if recursive {
-                collect(&entry, out, recursive);
-            }
-        } else if entry.extension().is_some_and(|e| e.eq_ignore_ascii_case("psc")) {
-            out.push(std::path::absolute(&entry).unwrap_or(entry));
-        }
-    }
 }
 
 #[cfg(test)]

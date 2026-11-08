@@ -12,13 +12,13 @@ use papyrus_ide::index::TypeRef;
 use papyrus_intern::Name;
 use papyrus_pex::pex::OpCode;
 
-use crate::{
-    codegen::convert_const,
+use crate::codegen::{
+    constant,
     ir::{FunctionIr, Inst, Operand},
 };
 
 /// Runs all passes.
-pub fn optimize(ir: &mut FunctionIr) {
+pub(crate) fn optimize(ir: &mut FunctionIr) {
     let passes: [(&str, fn(&mut FunctionIr)); 2] =
         [("fold_constant_casts", fold_constant_casts), ("remove_dead_jumps", remove_dead_jumps)];
     for (name, pass) in passes {
@@ -66,7 +66,7 @@ fn use_at(opcode: OpCode, pos: usize) -> Use {
 }
 
 /// Replaces temporaries holding a cast constant by the converted constant.
-pub fn fold_constant_casts(ir: &mut FunctionIr) {
+pub(crate) fn fold_constant_casts(ir: &mut FunctionIr) {
     let types: FxHashMap<Name, Option<TypeRef>> =
         ir.locals.iter().map(|s| (s.name, s.ty)).collect();
     let mut i = 0;
@@ -105,7 +105,7 @@ fn constant_cast(inst: &Inst, types: &FxHashMap<Name, Option<TypeRef>>) -> Optio
     if matches!(value, Operand::Float(_)) && to == TypeRef::STRING {
         return None;
     }
-    Some((*temp, convert_const(value, to)?))
+    Some((*temp, constant::convert(value, to)?))
 }
 
 /// The uses of `temp` after its definition at `def`, when they are all in the
@@ -203,7 +203,7 @@ fn live_in_any_block(ir: &FunctionIr, temp: Name, def: usize, end: usize) -> boo
 
 /// Removes jumps to the next instruction, and unreachable code after `RETURN`
 /// and unconditional jumps (up to the next label).
-pub fn remove_dead_jumps(ir: &mut FunctionIr) {
+pub(crate) fn remove_dead_jumps(ir: &mut FunctionIr) {
     let mut out: Vec<(Inst, u32)> = Vec::with_capacity(ir.code.len());
     let mut dead = false;
     for (inst, line) in ir.code.drain(..) {
@@ -241,7 +241,7 @@ pub fn remove_dead_jumps(ir: &mut FunctionIr) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{Label, Slot};
+    use crate::codegen::ir::{Label, Slot};
 
     fn op(opcode: OpCode, args: Vec<Operand>) -> (Inst, u32) {
         (Inst::Op { opcode, args }, 1)
