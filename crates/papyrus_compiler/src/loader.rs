@@ -41,25 +41,24 @@ pub fn load(ws: &mut Workspace, targets: &[PathBuf], imports: &[PathBuf]) {
 /// examples of doc tests.
 pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[PathBuf]) {
     let start = std::time::Instant::now();
-    // Script name (lowercase) to file, the first import directory winning.
-    let mut files: FxHashMap<String, (PathBuf, Origin)> = FxHashMap::default();
+    // Script name (its file name, which `Name` compares ignoring case) to
+    // file, the first import directory winning.
+    let mut files: FxHashMap<Name, (PathBuf, Origin)> = FxHashMap::default();
     for (i, dir) in imports.iter().enumerate() {
         let origin = Origin::Import(i.min(u16::MAX as usize) as u16);
         let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.clone());
         for path in scripts_of(&dir) {
             let Some(stem) = path.file_stem() else { continue };
-            files.entry(stem.to_string_lossy().to_ascii_lowercase()).or_insert((path, origin));
+            files.entry(Name::new(&stem.to_string_lossy())).or_insert((path, origin));
         }
     }
     log::info!("{} scripts in the import directories", files.len());
 
-    let mut loaded: FxHashSet<String> = FxHashSet::default();
-    let mut queue: Vec<String> = Vec::new();
+    let mut loaded: FxHashSet<Name> = FxHashSet::default();
+    let mut queue: Vec<Name> = Vec::new();
     for (path, text) in targets {
         let index = papyrus_ide::index_text(text);
-        if let Some(name) = index.name {
-            loaded.insert(name.as_str().to_ascii_lowercase());
-        }
+        loaded.extend(index.name);
         mentioned_names(text, &mut queue);
         declared_names(&index, &mut queue);
         ws.set_disk_index(path.clone(), index, Origin::Workspace);
@@ -67,11 +66,10 @@ pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[
 
     let mut parsed = 0;
     while let Some(name) = queue.pop() {
-        let key = name.to_ascii_lowercase();
-        if !loaded.insert(key.clone()) {
+        if !loaded.insert(name) {
             continue;
         }
-        let Some((path, origin)) = files.get(&key) else { continue };
+        let Some((path, origin)) = files.get(&name) else { continue };
         let Some(text) = papyrus_ide::read_file(path) else { continue };
         let index = papyrus_ide::index_text(&text);
         declared_names(&index, &mut queue);
@@ -81,12 +79,11 @@ pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[
 
     // The rest by name only; not the ones a previous load parsed.
     let mut stubs = 0;
-    for (key, (path, origin)) in &files {
-        if loaded.contains(key) || ws.file_id(path).is_some() {
+    for (&name, (path, origin)) in &files {
+        if loaded.contains(&name) || ws.file_id(path).is_some() {
             continue;
         }
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let index = ScriptIndex { name: Some(Name::new(&stem)), ..ScriptIndex::default() };
+        let index = ScriptIndex { name: Some(name), ..ScriptIndex::default() };
         ws.set_disk_index(path.clone(), index, *origin);
         stubs += 1;
     }
@@ -94,7 +91,7 @@ pub fn load_texts(ws: &mut Workspace, targets: &[(PathBuf, String)], imports: &[
 }
 
 /// Every name the source mentions that could be a script.
-fn mentioned_names(text: &str, out: &mut Vec<String>) {
+fn mentioned_names(text: &str, out: &mut Vec<Name>) {
     let parse = papyrus_parser::parse(text);
     let root = parse.source_file();
     for node in root.syntax().descendants() {
@@ -106,16 +103,16 @@ fn mentioned_names(text: &str, out: &mut Vec<String>) {
             _ => None,
         };
         if let Some(name) = name.filter(|n| !n.is_empty()) {
-            out.push(name.to_owned());
+            out.push(Name::new(name));
         }
     }
 }
 
 /// The scripts the declarations of a script refer to.
-fn declared_names(index: &ScriptIndex, out: &mut Vec<String>) {
+fn declared_names(index: &ScriptIndex, out: &mut Vec<Name>) {
     let mut push = |ty: Option<TypeRef>| {
         if let Some(TypeRef { base: BaseType::Object(name), .. }) = ty {
-            out.push(name.as_str().to_owned());
+            out.push(name);
         }
     };
     for m in index.members.iter() {
@@ -124,7 +121,7 @@ fn declared_names(index: &ScriptIndex, out: &mut Vec<String>) {
             push(p.ty);
         }
     }
-    out.extend(index.extends.iter().chain(index.imports.iter()).map(|n| n.as_str().to_owned()));
+    out.extend(index.extends.iter().chain(index.imports.iter()).copied());
 }
 
 /// The `.psc` files below the import directory `dir`, listed once per process:

@@ -1,8 +1,13 @@
 //! Assembly of a script into a [`PexFile`]: variables, properties, states,
 //! the string table and the debug information.
+//!
+//! The source is walked once, in order. Names are kept as the `&str` of the
+//! source text until they go into the string table: the order in which
+//! strings are first interned is the order of the table in the file.
+
+use std::borrow::Cow;
 
 use papyrus_ide::{
-    LineIndex,
     flags::FlagTargets,
     hir::Body,
     index::{TypeRef, doc_ranges},
@@ -17,14 +22,15 @@ use papyrus_pex::{
     PexFile, PexStr,
     pex::{
         DebugFunction, DebugFunctionType, DebugInfo, Function, FunctionFlags, FunctionInfo,
-        GameType, Instruction, LE_MAGIC_NUMBER, Object, ObjectFlags, Property, PropertyFlags,
-        State, UserFlag, Variable, VariableType, VariableValue, property_auto_var_name,
+        GameType, Instruction, LE_MAGIC_NUMBER, Object, ObjectFlags, OpCode, Property,
+        PropertyFlags, State, StringId, UserFlag, Variable, VariableType, VariableValue,
+        property_auto_var_name,
     },
 };
 
 use crate::{
     CompileOptions,
-    codegen::{self, ScriptCx, convert_const, type_name},
+    codegen::{self, ScriptCx, convert_const},
     ir::{FunctionIr, Inst, Operand, Slot},
     literal, log, opt,
     strings::StringTable,
@@ -44,18 +50,18 @@ pub(crate) fn assemble(
     options: &CompileOptions,
 ) -> PexFile<'static> {
     let mut a = Assembler {
-        cx: ScriptCx { sema, lines: LineIndex::new(sema.text), temps: 0 },
+        cx: ScriptCx::new(sema),
         options,
         strings: StringTable::default(),
         debug: Vec::new(),
         variables: Vec::new(),
         properties: Vec::new(),
-        states: vec![(String::new(), Vec::new())],
-        auto_state: String::new(),
+        states: vec![("", Vec::new())],
+        auto_state: "",
     };
     // Interned first so that `::State` and friends keep their spelling.
-    let script_name = sema.index.name_str().to_owned();
-    a.strings.id(&script_name);
+    let script_name = sema.index.name_str();
+    a.strings.id(script_name);
 
     let root = ast::SourceFile::from_root(sema.root);
     let mut header = None;
@@ -70,25 +76,24 @@ pub(crate) fn assemble(
 
     let (parent, docstring, user_flags) = match header {
         Some(h) => (
-            h.extends().map(|e| e.text().to_owned()).unwrap_or_default(),
+            h.extends().map_or("", |e| e.text()),
             a.docstring(h.syntax()),
             a.user_flags(h.flags(), FlagTargets::SCRIPT),
         ),
-        None => (String::new(), String::new(), 0),
+        None => ("", Cow::Borrowed(""), 0),
     };
 
-    let auto_state = std::mem::take(&mut a.auto_state);
     let states = std::mem::take(&mut a.states)
         .into_iter()
-        .map(|(name, functions)| State { name: a.strings.id(&name), functions })
+        .map(|(name, functions)| State { name: a.strings.id(name), functions })
         .collect();
     let object = Object {
-        name: a.strings.id(&script_name),
+        name: a.strings.id(script_name),
         size: 0,
-        parent_class_name: a.strings.id(&parent),
+        parent_class_name: a.strings.id(parent),
         docstring: a.strings.id(&docstring),
         user_flags: ObjectFlags::from_bits_retain(user_flags),
-        auto_state_name: a.strings.id(&auto_state),
+        auto_state_name: a.strings.id(a.auto_state),
         variables: std::mem::take(&mut a.variables),
         properties: std::mem::take(&mut a.properties),
         states,
@@ -105,7 +110,7 @@ pub(crate) fn assemble(
     let user_flags_table = flags
         .defs
         .iter()
-        .map(|d| UserFlag { name: a.strings.id(d.name.as_str()), flag_index: d.index as u8 })
+        .map(|d| UserFlag { name: a.strings.name(d.name), flag_index: d.index as u8 })
         .collect();
     let debug_info = options.debug_info.then(|| DebugInfo {
         modification_time: source.modified,
@@ -137,6 +142,7 @@ pub(crate) fn assemble(
     }
 }
 
+/// `'a` is the lifetime of the source text: names borrow it.
 struct Assembler<'o, 'a> {
     cx: ScriptCx<'a>,
     options: &'o CompileOptions,
@@ -144,37 +150,37 @@ struct Assembler<'o, 'a> {
     debug: Vec<DebugFunction>,
     variables: Vec<Variable>,
     properties: Vec<Property>,
-    /// States in source order, the empty state first.
-    states: Vec<(String, Vec<Function>)>,
-    auto_state: String,
+    /// States in source order, the empty state (`""`) first.
+    states: Vec<(&'a str, Vec<Function>)>,
+    /// The `Auto` state, `""` for none.
+    auto_state: &'a str,
 }
 
-impl Assembler<'_, '_> {
-    fn text(&self) -> &str {
+impl<'a> Assembler<'_, 'a> {
+    fn text(&self) -> &'a str {
         self.cx.sema.text
     }
 
     /// The `{ ... }` documentation of a declaration.
-    fn docstring(&self, node: SyntaxNode<'_>) -> String {
+    fn docstring(&self, node: SyntaxNode<'_>) -> Cow<'a, str> {
         // Only after the header: a `{ ... }` above belongs to the previous
         // declaration.
         let start = node.text_range().start();
         // The text between the braces is kept as written, indentation
         // included, like the official compiler does.
+        let text = self.text();
         doc_ranges(node)
             .into_iter()
             .filter(|r| r.start() >= start)
             .find_map(|r| {
-                let raw = &self.text()[usize::from(r.start())..usize::from(r.end())];
+                let raw = &text[usize::from(r.start())..usize::from(r.end())];
                 let inner = raw.strip_prefix('{')?;
-                Some(
-                    inner
-                        .strip_suffix('}')
-                        .unwrap_or(inner)
-                        .replace("\r\n", "\n")
-                        .trim()
-                        .to_owned(),
-                )
+                let inner = inner.strip_suffix('}').unwrap_or(inner);
+                Some(if inner.contains("\r\n") {
+                    Cow::Owned(inner.replace("\r\n", "\n").trim().to_owned())
+                } else {
+                    Cow::Borrowed(inner.trim())
+                })
             })
             .unwrap_or_default()
     }
@@ -198,18 +204,20 @@ impl Assembler<'_, '_> {
         bits
     }
 
-    fn state_index(&mut self, state: Option<&str>) -> usize {
-        let name = state.unwrap_or("");
+    /// The index of state `name` in `states`, added when new.
+    fn state_index(&mut self, name: &'a str) -> usize {
         match self.states.iter().position(|(n, _)| n.eq_ignore_ascii_case(name)) {
             Some(i) => i,
             None => {
-                self.states.push((name.to_owned(), Vec::new()));
+                self.states.push((name, Vec::new()));
                 self.states.len() - 1
             }
         }
     }
 
-    fn item(&mut self, item: ast::Item<'_>, state: Option<&str>) {
+    /// A declaration of the script, or of the state `state` (`""`: the empty
+    /// state).
+    fn item(&mut self, item: ast::Item<'a>, state: Option<&'a str>) {
         match item {
             ast::Item::Header(_) | ast::Item::Import(_) => {}
             ast::Item::VarDecl(var) => {
@@ -219,7 +227,7 @@ impl Assembler<'_, '_> {
                 let user_flags = self.user_flags(var.flags(), FlagTargets::VARIABLE);
                 let variable = Variable {
                     name: self.strings.id(name.text()),
-                    type_name: self.strings.id(&type_name(ty)),
+                    type_name: self.strings.type_name(ty),
                     user_flags,
                     value,
                 };
@@ -228,33 +236,31 @@ impl Assembler<'_, '_> {
             ast::Item::Property(prop) => self.property(prop),
             ast::Item::State(st) => {
                 let Some(name) = st.name() else { return };
-                let name = name.text().to_owned();
-                self.state_index(Some(&name));
+                let name = name.text();
+                self.state_index(name);
                 if st.is_auto() && self.auto_state.is_empty() {
-                    self.auto_state = name.clone();
+                    self.auto_state = name;
                 }
                 for inner in st.items() {
-                    self.item(inner, Some(&name));
+                    self.item(inner, Some(name));
                 }
             }
             ast::Item::Function(f) => {
                 let Some(name) = f.name() else { return };
-                let name = name.text().to_owned();
                 let info = self.function_info(f.syntax());
-                self.push_function(state, &name, info);
+                self.push_function(state.unwrap_or(""), name.text(), info);
             }
             ast::Item::Event(e) => {
                 let Some(name) = e.name() else { return };
-                let name = name.text().to_owned();
                 let info = self.function_info(e.syntax());
-                self.push_function(state, &name, info);
+                self.push_function(state.unwrap_or(""), name.text(), info);
             }
         }
     }
 
     fn push_function(
         &mut self,
-        state: Option<&str>,
+        state: &'a str,
         name: &str,
         (info, lines): (FunctionInfo, Vec<u16>),
     ) {
@@ -263,10 +269,11 @@ impl Assembler<'_, '_> {
         let name_id = self.strings.id(name);
         self.states[index].1.push(Function { name: name_id, info });
         if has_code {
-            self.debug_entry(state.unwrap_or(""), name, DebugFunctionType::Method, lines);
+            self.debug_entry(state, name, DebugFunctionType::Method, lines);
         }
     }
 
+    /// The source line of every instruction of a function.
     fn debug_entry(&mut self, state: &str, name: &str, kind: DebugFunctionType, lines: Vec<u16>) {
         if !self.options.debug_info {
             return;
@@ -281,25 +288,27 @@ impl Assembler<'_, '_> {
         self.debug.push(entry);
     }
 
+    /// The `= value` of a variable or property, converted to its type.
     fn initial_value(&mut self, init: Option<ast::Expr<'_>>, ty: Option<TypeRef>) -> VariableValue {
         let Some(init) = init else { return VariableValue::Null };
         let range = init.syntax().trimmed_range();
         let text = &self.text()[usize::from(range.start())..usize::from(range.end())];
         let Some(value) = literal::parse(text) else { return VariableValue::Null };
-        let value = ty.and_then(|t| convert_const(&value, &t.to_string())).unwrap_or(value);
+        let value = ty.and_then(|t| convert_const(&value, t)).unwrap_or(value);
         self.strings.value(&value)
     }
 
-    fn property(&mut self, prop: ast::Property<'_>) {
+    /// A property: `AutoReadOnly` ones get a getter returning the value,
+    /// `Auto` ones a hidden variable, full ones their `Get` and `Set`.
+    fn property(&mut self, prop: ast::Property<'a>) {
         let Some(name) = prop.name() else { return };
-        let name = name.text().to_owned();
+        let name = name.text();
         let ty = prop.ty().and_then(TypeRef::from_ast);
-        let ty_name = type_name(ty);
         let docstring = self.docstring(prop.syntax());
         let user_flags = self.user_flags(prop.flags(), FlagTargets::PROPERTY);
         let mut property = Property {
-            name: self.strings.id(&name),
-            ty: self.strings.id(&ty_name),
+            name: self.strings.id(name),
+            ty: self.strings.type_name(ty),
             docstring: self.strings.id(&docstring),
             user_flags,
             flags: PropertyFlags::empty(),
@@ -308,26 +317,22 @@ impl Assembler<'_, '_> {
             write_handler: None,
         };
         if prop.is_read_only() {
-            // A getter returning the value.
             let line = self.cx.line(prop.syntax().trimmed_range());
             let value = self.initial_value(prop.initializer(), ty);
             let info = FunctionInfo {
-                return_type: self.strings.id(&ty_name),
+                return_type: self.strings.type_name(ty),
                 docstring: self.strings.id(""),
                 user_flags: 0,
                 flags: FunctionFlags::empty(),
                 params: Vec::new(),
                 locals: Vec::new(),
-                instructions: vec![Instruction {
-                    opcode: papyrus_pex::pex::OpCode::Ret,
-                    args: vec![value],
-                }],
+                instructions: vec![Instruction { opcode: OpCode::Ret, args: vec![value] }],
             };
             property.flags = PropertyFlags::READ;
             property.read_handler = Some(info);
-            self.debug_entry("", &name, DebugFunctionType::Getter, vec![line as u16]);
+            self.debug_entry("", name, DebugFunctionType::Getter, vec![line as u16]);
         } else if prop.is_auto() {
-            let var = property_auto_var_name(&name);
+            let var = property_auto_var_name(name);
             // Flags only allowed on variables (`Conditional`) go to the
             // hidden variable.
             let table = self.cx.sema.ws.flags_of(self.cx.sema.file);
@@ -343,7 +348,7 @@ impl Assembler<'_, '_> {
             let value = self.initial_value(prop.initializer(), ty);
             let variable = Variable {
                 name: self.strings.id(&var),
-                type_name: self.strings.id(&ty_name),
+                type_name: self.strings.type_name(ty),
                 user_flags: var_flags,
                 value,
             };
@@ -357,18 +362,19 @@ impl Assembler<'_, '_> {
                 if fname.text().eq_ignore_ascii_case("Get") {
                     property.flags |= PropertyFlags::READ;
                     property.read_handler = Some(info);
-                    self.debug_entry("", &name, DebugFunctionType::Getter, lines);
+                    self.debug_entry("", name, DebugFunctionType::Getter, lines);
                 } else if fname.text().eq_ignore_ascii_case("Set") {
                     property.flags |= PropertyFlags::WRITE;
                     property.write_handler = Some(info);
-                    self.debug_entry("", &name, DebugFunctionType::Setter, lines);
+                    self.debug_entry("", name, DebugFunctionType::Setter, lines);
                 }
             }
         }
         self.properties.push(property);
     }
 
-    /// Compiles a `FUNCTION` or `EVENT` node.
+    /// Compiles a `FUNCTION` or `EVENT` node, and returns the source line of
+    /// each instruction.
     fn function_info(&mut self, node: SyntaxNode<'_>) -> (FunctionInfo, Vec<u16>) {
         let (ret, global, native, flags, params) = if let Some(f) = ast::Function::cast(node) {
             let ret = f.return_type().and_then(TypeRef::from_ast);
@@ -396,15 +402,13 @@ impl Assembler<'_, '_> {
                 log::trace!("function {name}:\n{ir}");
                 ir
             }
+            // Native functions: only the signature.
             None => FunctionIr {
                 params: params
                     .iter()
                     .flat_map(|l| l.params())
                     .filter_map(|p| {
-                        Some(Slot {
-                            name: p.name()?.text().to_owned(),
-                            ty: type_name(p.ty().and_then(TypeRef::from_ast)),
-                        })
+                        Some(Slot::new(p.name()?.text(), p.ty().and_then(TypeRef::from_ast)))
                     })
                     .collect(),
                 ..FunctionIr::default()
@@ -418,43 +422,44 @@ impl Assembler<'_, '_> {
             fn_flags |= FunctionFlags::NATIVE;
         }
         let docstring = self.docstring(node);
-        self.lower_function(&ir, &type_name(ret), &docstring, flags, fn_flags)
+        self.lower_function(&ir, ret, &docstring, flags, fn_flags)
     }
 
+    /// The IR as `.pex` code: names to the string table, labels to relative
+    /// jump offsets, and the argument count of calls.
     fn lower_function(
         &mut self,
         ir: &FunctionIr,
-        ret: &str,
+        ret: Option<TypeRef>,
         docstring: &str,
         user_flags: u32,
         flags: FunctionFlags,
     ) -> (FunctionInfo, Vec<u16>) {
-        let slots = |s: &[Slot], strings: &mut StringTable| -> Vec<VariableType> {
-            s.iter()
-                .map(|s| VariableType { name: strings.id(&s.name), ty: strings.id(&s.ty) })
-                .collect()
-        };
-        let params = slots(&ir.params, &mut self.strings);
-        let locals = slots(&ir.locals, &mut self.strings);
-        let mut instructions = Vec::new();
-        let mut lines = Vec::new();
-        for inst in ir.lower() {
-            let fixed = inst.opcode.argument_count();
-            let mut args: Vec<VariableValue> = Vec::with_capacity(inst.args.len() + 1);
-            for (i, arg) in inst.args.iter().enumerate() {
-                if inst.opcode.is_variadic() && i == fixed {
-                    args.push(VariableValue::Integer((inst.args.len() - fixed) as i32));
+        let params = self.slots(&ir.params);
+        let locals = self.slots(&ir.locals);
+        let positions = ir.label_positions();
+        let count = ir.instruction_count();
+        let mut instructions = Vec::with_capacity(count);
+        let mut lines = Vec::with_capacity(count);
+        for (inst, line) in &ir.code {
+            let (opcode, args) = match inst {
+                Inst::Label(_) => continue,
+                Inst::Op { opcode, args } => (*opcode, self.arguments(*opcode, args)),
+                Inst::Jump { opcode, cond, target } => {
+                    // Offsets are relative to the jump.
+                    let here = instructions.len() as i64;
+                    let to = positions[target.0 as usize] as i64;
+                    let mut args: Vec<VariableValue> =
+                        cond.iter().map(|c| self.strings.value(c)).collect();
+                    args.push(VariableValue::Integer((to - here) as i32));
+                    (*opcode, args)
                 }
-                args.push(self.strings.value(arg));
-            }
-            if inst.opcode.is_variadic() && inst.args.len() == fixed {
-                args.push(VariableValue::Integer(0));
-            }
-            instructions.push(Instruction { opcode: inst.opcode, args });
-            lines.push(inst.line.min(u16::MAX as u32) as u16);
+            };
+            instructions.push(Instruction { opcode, args });
+            lines.push(u16::try_from(*line).unwrap_or(u16::MAX));
         }
         let info = FunctionInfo {
-            return_type: self.strings.id(ret),
+            return_type: self.strings.type_name(ret),
             docstring: self.strings.id(docstring),
             user_flags,
             flags,
@@ -465,50 +470,52 @@ impl Assembler<'_, '_> {
         (info, lines)
     }
 
-    /// The `GetState` and `GotoState` functions every script has.
+    fn slots(&mut self, slots: &[Slot]) -> Vec<VariableType> {
+        slots
+            .iter()
+            .map(|s| VariableType {
+                name: self.strings.name(s.name),
+                ty: self.strings.type_name(s.ty),
+            })
+            .collect()
+    }
+
+    /// The arguments of an instruction; calls get the count of their
+    /// variadic arguments after the fixed ones.
+    fn arguments(&mut self, opcode: OpCode, args: &[Operand]) -> Vec<VariableValue> {
+        let fixed = opcode.argument_count().min(args.len());
+        let mut out = Vec::with_capacity(args.len() + 1);
+        out.extend(args[..fixed].iter().map(|a| self.strings.value(a)));
+        if opcode.is_variadic() {
+            out.push(VariableValue::Integer((args.len() - fixed) as i32));
+        }
+        out.extend(args[fixed..].iter().map(|a| self.strings.value(a)));
+        out
+    }
+
+    /// The `GetState` and `GotoState` functions every script has, unless it
+    /// defines them.
     fn state_functions(&mut self) {
-        use papyrus_pex::pex::OpCode;
         let defined =
             |a: &Self, name: &str| a.states[0].1.iter().any(|f| a.strings_eq(f.name, name));
         if !defined(self, "GotoState") {
+            let call = |name: &str| {
+                let args =
+                    vec![Operand::var(name), Operand::var("self"), Operand::var("::NoneVar")];
+                (Inst::Op { opcode: OpCode::CallMethod, args }, 0)
+            };
+            let assign = Inst::Op {
+                opcode: OpCode::Assign,
+                args: vec![Operand::var("::State"), Operand::var("newState")],
+            };
             let ir = FunctionIr {
-                params: vec![Slot { name: "newState".into(), ty: "String".into() }],
-                locals: vec![Slot { name: "::NoneVar".into(), ty: "None".into() }],
-                code: vec![
-                    (
-                        Inst::Op {
-                            opcode: OpCode::CallMethod,
-                            args: vec![
-                                Operand::var("onEndState"),
-                                Operand::var("self"),
-                                Operand::var("::NoneVar"),
-                            ],
-                        },
-                        0,
-                    ),
-                    (
-                        Inst::Op {
-                            opcode: OpCode::Assign,
-                            args: vec![Operand::var("::State"), Operand::var("newState")],
-                        },
-                        0,
-                    ),
-                    (
-                        Inst::Op {
-                            opcode: OpCode::CallMethod,
-                            args: vec![
-                                Operand::var("onBeginState"),
-                                Operand::var("self"),
-                                Operand::var("::NoneVar"),
-                            ],
-                        },
-                        0,
-                    ),
-                ],
+                params: vec![Slot::new("newState", Some(TypeRef::STRING))],
+                locals: vec![Slot::new("::NoneVar", None)],
+                code: vec![call("onEndState"), (assign, 0), call("onBeginState")],
             };
             let (info, _) = self.lower_function(
                 &ir,
-                "None",
+                None,
                 "Function that switches this object to the specified state",
                 0,
                 FunctionFlags::empty(),
@@ -517,16 +524,11 @@ impl Assembler<'_, '_> {
             self.states[0].1.push(Function { name, info });
         }
         if !defined(self, "GetState") {
-            let ir = FunctionIr {
-                code: vec![(
-                    Inst::Op { opcode: OpCode::Ret, args: vec![Operand::var("::State")] },
-                    0,
-                )],
-                ..FunctionIr::default()
-            };
+            let ret = Inst::Op { opcode: OpCode::Ret, args: vec![Operand::var("::State")] };
+            let ir = FunctionIr { code: vec![(ret, 0)], ..FunctionIr::default() };
             let (info, _) = self.lower_function(
                 &ir,
-                "String",
+                Some(TypeRef::STRING),
                 "Function that returns the current state",
                 0,
                 FunctionFlags::empty(),
@@ -536,7 +538,7 @@ impl Assembler<'_, '_> {
         }
     }
 
-    fn strings_eq(&self, id: papyrus_pex::pex::StringId, name: &str) -> bool {
+    fn strings_eq(&self, id: StringId, name: &str) -> bool {
         self.strings.get(id).is_some_and(|s| s.eq_ignore_ascii_case(name))
     }
 }

@@ -1,6 +1,12 @@
 //! The reconstructed source: expressions and statements, and their printing.
+//!
+//! Names and strings are [`Text`]s: borrowed from the string table of the
+//! `.pex` file (`'p`), owned only for the rare strings that are not UTF-8.
 
-use std::fmt::Write as _;
+use std::{borrow::Cow, fmt::Write as _};
+
+/// A name or string of the reconstructed source.
+pub(crate) type Text<'p> = Cow<'p, str>;
 
 /// A binary operator, with its precedence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,31 +67,31 @@ const POSTFIX: u8 = 8;
 
 /// An expression.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Expr {
+pub(crate) enum Expr<'p> {
     None,
     Int(i32),
     Float(f32),
     Bool(bool),
-    Str(String),
+    Str(Text<'p>),
     /// A local, parameter, variable, property or script name.
-    Name(String),
+    Name(Text<'p>),
     SelfRef,
     ParentRef,
-    Field(Box<Expr>, String),
+    Field(Box<Expr<'p>>, Text<'p>),
     /// A call; without receiver for functions of `Self`.
-    Call(Option<Box<Expr>>, String, Vec<Expr>),
-    Index(Box<Expr>, Box<Expr>),
-    Cast(Box<Expr>, String),
+    Call(Option<Box<Expr<'p>>>, Text<'p>, Vec<Expr<'p>>),
+    Index(Box<Expr<'p>>, Box<Expr<'p>>),
+    Cast(Box<Expr<'p>>, Text<'p>),
     /// A conversion the compiler inserts by itself (to `Bool`, to `String`,
     /// `Int` to `Float`): printed as the inner expression.
-    Implicit(Box<Expr>, String),
-    New(String, Box<Expr>),
-    Not(Box<Expr>),
-    Neg(Box<Expr>),
-    Binary(BinOp, Box<Expr>, Box<Expr>),
+    Implicit(Box<Expr<'p>>, Text<'p>),
+    New(Text<'p>, Box<Expr<'p>>),
+    Not(Box<Expr<'p>>),
+    Neg(Box<Expr<'p>>),
+    Binary(BinOp, Box<Expr<'p>>, Box<Expr<'p>>),
 }
 
-impl Expr {
+impl Expr<'_> {
     fn precedence(&self) -> u8 {
         match self {
             Expr::Binary(op, ..) => op.precedence(),
@@ -140,15 +146,22 @@ impl Expr {
         }
     }
 
+    /// Whether the expression uses `name` (ignoring case).
+    pub(crate) fn uses(&self, name: &str) -> bool {
+        let mut found = false;
+        self.names(&mut |n| found |= n.eq_ignore_ascii_case(name));
+        found
+    }
+
     pub(crate) fn write(&self, out: &mut String) {
         match self {
             Expr::None => out.push_str("None"),
             Expr::Int(i) => {
                 let _ = write!(out, "{i}");
             }
-            Expr::Float(f) => out.push_str(&float(*f)),
+            Expr::Float(f) => write_float(out, *f),
             Expr::Bool(b) => out.push_str(if *b { "True" } else { "False" }),
-            Expr::Str(s) => string(out, s),
+            Expr::Str(s) => write_string(out, s),
             Expr::Name(n) => out.push_str(n),
             Expr::SelfRef => out.push_str("Self"),
             Expr::ParentRef => out.push_str("Parent"),
@@ -210,7 +223,7 @@ impl Expr {
         }
     }
 
-    fn child(&self, out: &mut String, e: &Expr, min: u8) {
+    fn child(&self, out: &mut String, e: &Expr<'_>, min: u8) {
         // `(i as Float) / 2` reads better than `i as Float / 2`.
         let cast_operand = matches!(self, Expr::Binary(..)) && matches!(e, Expr::Cast(..));
         if e.precedence() < min || cast_operand {
@@ -223,15 +236,17 @@ impl Expr {
     }
 }
 
-fn float(f: f32) -> String {
-    let mut s = format!("{f}");
-    if !s.contains(['.', 'e', 'E', 'i', 'N']) {
-        s.push_str(".0");
+/// A float literal: always with a `.`, so that it reads back as a float.
+fn write_float(out: &mut String, f: f32) {
+    let start = out.len();
+    let _ = write!(out, "{f}");
+    if !out[start..].contains(['.', 'e', 'E', 'i', 'N']) {
+        out.push_str(".0");
     }
-    s
 }
 
-fn string(out: &mut String, s: &str) {
+/// A string literal: quoted, with `"`, `\`, newlines and tabs escaped.
+fn write_string(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -247,17 +262,17 @@ fn string(out: &mut String, s: &str) {
 
 /// A statement.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Stmt {
+pub(crate) enum Stmt<'p> {
     /// `Type name = value`
-    Local(String, String, Option<Expr>),
-    Assign(Expr, Expr),
-    Expr(Expr),
-    Return(Option<Expr>),
-    If(Vec<(Expr, Vec<Stmt>)>, Option<Vec<Stmt>>),
-    While(Expr, Vec<Stmt>),
+    Local(Text<'p>, Text<'p>, Option<Expr<'p>>),
+    Assign(Expr<'p>, Expr<'p>),
+    Expr(Expr<'p>),
+    Return(Option<Expr<'p>>),
+    If(Vec<(Expr<'p>, Vec<Stmt<'p>>)>, Option<Vec<Stmt<'p>>>),
+    While(Expr<'p>, Vec<Stmt<'p>>),
 }
 
-impl Stmt {
+impl Stmt<'_> {
     /// Calls `f` on every name the statement uses, nested blocks included.
     pub(crate) fn names(&self, f: &mut dyn FnMut(&str)) {
         match self {
@@ -292,22 +307,29 @@ impl Stmt {
             }
         }
     }
+
+    /// Whether the statement uses `name` (ignoring case).
+    pub(crate) fn uses(&self, name: &str) -> bool {
+        let mut found = false;
+        self.names(&mut |n| found |= n.eq_ignore_ascii_case(name));
+        found
+    }
 }
 
 /// Prints statements, indented by `depth` levels of four spaces.
-pub(crate) fn write_block(out: &mut String, stmts: &[Stmt], depth: usize) {
+pub(crate) fn write_block(out: &mut String, stmts: &[Stmt<'_>], depth: usize) {
     for s in stmts {
         write_stmt(out, s, depth);
     }
 }
 
-fn indent(out: &mut String, depth: usize) {
+pub(crate) fn indent(out: &mut String, depth: usize) {
     for _ in 0..depth {
         out.push_str("    ");
     }
 }
 
-fn write_stmt(out: &mut String, stmt: &Stmt, depth: usize) {
+fn write_stmt(out: &mut String, stmt: &Stmt<'_>, depth: usize) {
     indent(out, depth);
     match stmt {
         Stmt::Local(ty, name, init) => {

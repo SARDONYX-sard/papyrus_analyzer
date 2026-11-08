@@ -1,6 +1,9 @@
 // SPDX-FileCopyrightText: (C) 2025 russo-2025
 // SPDX-License-Identifier: MIT
 //! Writing `.pex` files.
+//!
+//! The mirror of `read.rs`: the same methods in the same order, each writing
+//! the fields its reader reads (the layout is described there).
 
 use crate::{Error, pex::*};
 
@@ -10,6 +13,7 @@ struct Writer {
     bytes: Vec<u8>,
 }
 
+/// Primitive values.
 impl Writer {
     fn u8(&mut self, value: u8) {
         self.bytes.push(value);
@@ -31,32 +35,51 @@ impl Writer {
         self.bytes.extend_from_slice(&value.to_be_bytes());
     }
 
+    fn f32(&mut self, value: f32) {
+        self.u32(value.to_bits());
+    }
+
+    /// A count or a length, which the format stores as u16.
     fn len(&mut self, len: usize) -> Result<(), Error> {
         let len = u16::try_from(len).map_err(|_| Error::OverFlowVecLen { len })?;
         self.u16(len);
         Ok(())
     }
 
+    /// A string of the header or of the string table: u16 length, then the
+    /// bytes.
     fn string(&mut self, value: &PexStr<'_>) -> Result<(), Error> {
         self.len(value.as_bytes().len())?;
         self.bytes.extend_from_slice(value.as_bytes());
         Ok(())
     }
 
-    fn id(&mut self, value: StringId) {
+    /// An index into the string table.
+    fn string_id(&mut self, value: StringId) {
         self.u16(value.0);
     }
 
-    fn value(&mut self, value: &VariableValue) {
+    /// A u16 count, then every item.
+    fn list<T>(
+        &mut self,
+        items: &[T],
+        mut write: impl FnMut(&mut Self, &T) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        self.len(items.len())?;
+        items.iter().try_for_each(|item| write(self, item))
+    }
+
+    /// A type tag (u8), then the value.
+    fn value(&mut self, value: &VariableValue) -> Result<(), Error> {
         match *value {
             VariableValue::Null => self.u8(0),
             VariableValue::Identifier(id) => {
                 self.u8(1);
-                self.id(id);
+                self.string_id(id);
             }
             VariableValue::String(id) => {
                 self.u8(2);
-                self.id(id);
+                self.string_id(id);
             }
             VariableValue::Integer(v) => {
                 self.u8(3);
@@ -64,95 +87,119 @@ impl Writer {
             }
             VariableValue::Float(v) => {
                 self.u8(4);
-                self.u32(v.to_bits());
+                self.f32(v);
             }
             VariableValue::Boolean(v) => {
                 self.u8(5);
                 self.u8(u8::from(v));
             }
         }
+        Ok(())
+    }
+}
+
+/// Records, from the leaves to the root.
+impl Writer {
+    fn variable_type(&mut self, v: &VariableType) -> Result<(), Error> {
+        self.string_id(v.name);
+        self.string_id(v.ty);
+        Ok(())
     }
 
-    fn variable_types(&mut self, vars: &[VariableType]) -> Result<(), Error> {
-        self.len(vars.len())?;
-        for v in vars {
-            self.id(v.name);
-            self.id(v.ty);
-        }
-        Ok(())
+    fn instruction(&mut self, instruction: &Instruction) -> Result<(), Error> {
+        self.u8(instruction.opcode as u8);
+        // The count of the arguments of calls is one of the `args`.
+        instruction.args.iter().try_for_each(|arg| self.value(arg))
     }
 
     fn function_info(&mut self, info: &FunctionInfo) -> Result<(), Error> {
-        self.id(info.return_type);
-        self.id(info.docstring);
+        self.string_id(info.return_type);
+        self.string_id(info.docstring);
         self.u32(info.user_flags);
         self.u8(info.flags.bits());
-        self.variable_types(&info.params)?;
-        self.variable_types(&info.locals)?;
-        self.len(info.instructions.len())?;
-        for instruction in &info.instructions {
-            self.u8(instruction.opcode as u8);
-            for arg in &instruction.args {
-                self.value(arg);
-            }
-        }
-        Ok(())
+        self.list(&info.params, Self::variable_type)?;
+        self.list(&info.locals, Self::variable_type)?;
+        self.list(&info.instructions, Self::instruction)
+    }
+
+    fn function(&mut self, function: &Function) -> Result<(), Error> {
+        self.string_id(function.name);
+        self.function_info(&function.info)
+    }
+
+    fn state(&mut self, state: &State) -> Result<(), Error> {
+        self.string_id(state.name);
+        self.list(&state.functions, Self::function)
     }
 
     fn property(&mut self, property: &Property) -> Result<(), Error> {
-        self.id(property.name);
-        self.id(property.ty);
-        self.id(property.docstring);
+        self.string_id(property.name);
+        self.string_id(property.ty);
+        self.string_id(property.docstring);
         self.u32(property.user_flags);
         self.u8(property.flags.bits());
+        // Auto properties name their variable; the others have accessors.
         if property.is_auto_var() {
             let name = property.auto_var_name.ok_or_else(|| Error::MissingAutoVerInProperty {
                 name: property.name.to_string(),
             })?;
-            self.id(name);
-        } else {
-            if let Some(handler) = &property.read_handler {
-                self.function_info(handler)?;
-            }
-            if let Some(handler) = &property.write_handler {
-                self.function_info(handler)?;
-            }
+            self.string_id(name);
+            return Ok(());
+        }
+        if let Some(handler) = &property.read_handler {
+            self.function_info(handler)?;
+        }
+        if let Some(handler) = &property.write_handler {
+            self.function_info(handler)?;
         }
         Ok(())
     }
 
+    fn variable(&mut self, variable: &Variable) -> Result<(), Error> {
+        self.string_id(variable.name);
+        self.string_id(variable.type_name);
+        self.u32(variable.user_flags);
+        self.value(&variable.value)
+    }
+
     fn object(&mut self, object: &Object) -> Result<(), Error> {
-        self.id(object.name);
-        // The size counts itself and everything after it in the object.
+        self.string_id(object.name);
+        // The size counts itself and everything after it in the object:
+        // written once the rest is.
         let size_offset = self.bytes.len();
         self.u32(0);
-        self.id(object.parent_class_name);
-        self.id(object.docstring);
+        self.string_id(object.parent_class_name);
+        self.string_id(object.docstring);
         self.u32(object.user_flags.bits());
-        self.id(object.auto_state_name);
-        self.len(object.variables.len())?;
-        for v in &object.variables {
-            self.id(v.name);
-            self.id(v.type_name);
-            self.u32(v.user_flags);
-            self.value(&v.value);
-        }
-        self.len(object.properties.len())?;
-        for p in &object.properties {
-            self.property(p)?;
-        }
-        self.len(object.states.len())?;
-        for state in &object.states {
-            self.id(state.name);
-            self.len(state.functions.len())?;
-            for f in &state.functions {
-                self.id(f.name);
-                self.function_info(&f.info)?;
-            }
-        }
+        self.string_id(object.auto_state_name);
+        self.list(&object.variables, Self::variable)?;
+        self.list(&object.properties, Self::property)?;
+        self.list(&object.states, Self::state)?;
         let size = (self.bytes.len() - size_offset) as u32;
         self.bytes[size_offset..size_offset + 4].copy_from_slice(&size.to_be_bytes());
         Ok(())
+    }
+
+    fn user_flag(&mut self, flag: &UserFlag) -> Result<(), Error> {
+        self.string_id(flag.name);
+        self.u8(flag.flag_index);
+        Ok(())
+    }
+
+    fn debug_function(&mut self, f: &DebugFunction) -> Result<(), Error> {
+        self.string_id(f.object_name);
+        self.string_id(f.state_name);
+        self.string_id(f.function_name);
+        self.u8(f.function_type as u8);
+        self.list(&f.instruction_line_numbers, |w, &line| {
+            w.u16(line);
+            Ok(())
+        })
+    }
+
+    fn debug_info(&mut self, debug: &DebugInfo) -> Result<(), Error> {
+        self.i64(debug.modification_time);
+        self.list(&debug.functions, Self::debug_function)
     }
 }
 
@@ -168,37 +215,13 @@ impl PexFile<'_> {
         w.string(&self.src_file_name)?;
         w.string(&self.user_name)?;
         w.string(&self.machine_name)?;
-        w.len(self.string_table.len())?;
-        for s in &self.string_table {
-            w.string(s)?;
+        w.list(&self.string_table, Writer::string)?;
+        w.u8(u8::from(self.debug_info.is_some()));
+        if let Some(debug) = &self.debug_info {
+            w.debug_info(debug)?;
         }
-        match &self.debug_info {
-            Some(debug) => {
-                w.u8(1);
-                w.i64(debug.modification_time);
-                w.len(debug.functions.len())?;
-                for f in &debug.functions {
-                    w.id(f.object_name);
-                    w.id(f.state_name);
-                    w.id(f.function_name);
-                    w.u8(f.function_type as u8);
-                    w.len(f.instruction_line_numbers.len())?;
-                    for &line in &f.instruction_line_numbers {
-                        w.u16(line);
-                    }
-                }
-            }
-            None => w.u8(0),
-        }
-        w.len(self.user_flags.len())?;
-        for flag in &self.user_flags {
-            w.id(flag.name);
-            w.u8(flag.flag_index);
-        }
-        w.len(self.objects.len())?;
-        for object in &self.objects {
-            w.object(object)?;
-        }
+        w.list(&self.user_flags, Writer::user_flag)?;
+        w.list(&self.objects, Writer::object)?;
         Ok(w.bytes)
     }
 }

@@ -1,6 +1,22 @@
 // SPDX-FileCopyrightText: (C) 2025 russo-2025
 // SPDX-License-Identifier: MIT
 //! Reading `.pex` files.
+//!
+//! The file is a tree of records, big-endian, each written field after field
+//! (see [`crate::pex`] for what each field means):
+//!
+//! ```text
+//! file      = header, string table, debug info?, user flags, objects
+//! object    = name, size, parent, doc, flags, auto state, variables, properties, states
+//! property  = name, type, doc, flags, (auto variable | getter? setter?)
+//! state     = name, functions
+//! function  = name, function info
+//! info      = return type, doc, flags, params, locals, instructions
+//! list of T = u16 count, then count times T
+//! ```
+//!
+//! [`Reader`] has one method per record, in this order; `write.rs` has the
+//! same methods in the same order, so the two can be read side by side.
 
 use std::borrow::Cow;
 
@@ -12,6 +28,7 @@ struct Reader<'a> {
     remaining: &'a [u8],
 }
 
+/// Primitive values.
 impl<'a> Reader<'a> {
     fn offset(&self) -> usize {
         self.original.len() - self.remaining.len()
@@ -57,23 +74,37 @@ impl<'a> Reader<'a> {
         Ok(f32::from_bits(self.u32()?))
     }
 
+    /// A string of the header or of the string table: u16 length, then the
+    /// bytes, borrowed from the input.
     fn string(&mut self) -> Result<PexStr<'a>, Error> {
         let len = self.u16()? as usize;
         Ok(PexStr(Cow::Borrowed(self.take(len)?)))
     }
 
+    /// An index into the string table.
     fn string_id(&mut self) -> Result<StringId, Error> {
         Ok(StringId(self.u16()?))
     }
 
-    fn vec<T>(
+    /// A u16 count, then that many `T`.
+    fn list<T>(
         &mut self,
-        mut f: impl FnMut(&mut Self) -> Result<T, Error>,
+        mut read: impl FnMut(&mut Self) -> Result<T, Error>,
     ) -> Result<Vec<T>, Error> {
         let len = self.u16()? as usize;
-        (0..len).map(|_| f(self)).collect()
+        (0..len).map(|_| read(self)).collect()
     }
 
+    /// `T` when `present`, which a flag read before tells.
+    fn optional<T>(
+        &mut self,
+        present: bool,
+        read: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<Option<T>, Error> {
+        if present { read(self).map(Some) } else { Ok(None) }
+    }
+
+    /// A type tag (u8), then the value.
     fn value(&mut self) -> Result<VariableValue, Error> {
         let offset = self.offset();
         Ok(match self.u8()? {
@@ -86,7 +117,10 @@ impl<'a> Reader<'a> {
             value => return Err(Error::InvalidVariableValue { offset, value }),
         })
     }
+}
 
+/// Records, from the leaves to the root.
+impl Reader<'_> {
     fn variable_type(&mut self) -> Result<VariableType, Error> {
         Ok(VariableType { name: self.string_id()?, ty: self.string_id()? })
     }
@@ -99,6 +133,7 @@ impl<'a> Reader<'a> {
         for _ in 0..opcode.argument_count() {
             args.push(self.value()?);
         }
+        // Calls: an integer count, then that many arguments.
         if opcode.is_variadic() {
             let count = self.value()?;
             args.push(count);
@@ -117,10 +152,18 @@ impl<'a> Reader<'a> {
             docstring: self.string_id()?,
             user_flags: self.u32()?,
             flags: FunctionFlags::from_bits_retain(self.u8()?),
-            params: self.vec(Self::variable_type)?,
-            locals: self.vec(Self::variable_type)?,
-            instructions: self.vec(Self::instruction)?,
+            params: self.list(Self::variable_type)?,
+            locals: self.list(Self::variable_type)?,
+            instructions: self.list(Self::instruction)?,
         })
+    }
+
+    fn function(&mut self) -> Result<Function, Error> {
+        Ok(Function { name: self.string_id()?, info: self.function_info()? })
+    }
+
+    fn state(&mut self) -> Result<State, Error> {
+        Ok(State { name: self.string_id()?, functions: self.list(Self::function)? })
     }
 
     fn property(&mut self) -> Result<Property, Error> {
@@ -129,31 +172,28 @@ impl<'a> Reader<'a> {
         let docstring = self.string_id()?;
         let user_flags = self.u32()?;
         let flags = PropertyFlags::from_bits_retain(self.u8()?);
-        let (auto_var_name, read_handler, write_handler) =
-            if flags.contains(PropertyFlags::AUTO_VAR) {
-                (Some(self.string_id()?), None, None)
-            } else {
-                let read = if flags.contains(PropertyFlags::READ) {
-                    Some(self.function_info()?)
-                } else {
-                    None
-                };
-                let write = if flags.contains(PropertyFlags::WRITE) {
-                    Some(self.function_info()?)
-                } else {
-                    None
-                };
-                (None, read, write)
-            };
+        // Auto properties name their variable; the others have accessors.
+        let auto = flags.contains(PropertyFlags::AUTO_VAR);
+        let read = !auto && flags.contains(PropertyFlags::READ);
+        let write = !auto && flags.contains(PropertyFlags::WRITE);
         Ok(Property {
             name,
             ty,
             docstring,
             user_flags,
             flags,
-            auto_var_name,
-            read_handler,
-            write_handler,
+            auto_var_name: self.optional(auto, Self::string_id)?,
+            read_handler: self.optional(read, Self::function_info)?,
+            write_handler: self.optional(write, Self::function_info)?,
+        })
+    }
+
+    fn variable(&mut self) -> Result<Variable, Error> {
+        Ok(Variable {
+            name: self.string_id()?,
+            type_name: self.string_id()?,
+            user_flags: self.u32()?,
+            value: self.value()?,
         })
     }
 
@@ -165,47 +205,40 @@ impl<'a> Reader<'a> {
             docstring: self.string_id()?,
             user_flags: ObjectFlags::from_bits_retain(self.u32()?),
             auto_state_name: self.string_id()?,
-            variables: self.vec(|r| {
-                Ok(Variable {
-                    name: r.string_id()?,
-                    type_name: r.string_id()?,
-                    user_flags: r.u32()?,
-                    value: r.value()?,
-                })
-            })?,
-            properties: self.vec(Self::property)?,
-            states: self.vec(|r| {
-                Ok(State {
-                    name: r.string_id()?,
-                    functions: r
-                        .vec(|r| Ok(Function { name: r.string_id()?, info: r.function_info()? }))?,
-                })
-            })?,
+            variables: self.list(Self::variable)?,
+            properties: self.list(Self::property)?,
+            states: self.list(Self::state)?,
+        })
+    }
+
+    fn user_flag(&mut self) -> Result<UserFlag, Error> {
+        Ok(UserFlag { name: self.string_id()?, flag_index: self.u8()? })
+    }
+
+    fn debug_function(&mut self) -> Result<DebugFunction, Error> {
+        let object_name = self.string_id()?;
+        let state_name = self.string_id()?;
+        let function_name = self.string_id()?;
+        let offset = self.offset();
+        let function_type = match self.u8()? {
+            0 => DebugFunctionType::Method,
+            1 => DebugFunctionType::Getter,
+            2 => DebugFunctionType::Setter,
+            value => return Err(Error::InvalidDebugFunctionType { offset, value }),
+        };
+        Ok(DebugFunction {
+            object_name,
+            state_name,
+            function_name,
+            function_type,
+            instruction_line_numbers: self.list(Self::u16)?,
         })
     }
 
     fn debug_info(&mut self) -> Result<DebugInfo, Error> {
         Ok(DebugInfo {
             modification_time: self.i64()?,
-            functions: self.vec(|r| {
-                let object_name = r.string_id()?;
-                let state_name = r.string_id()?;
-                let function_name = r.string_id()?;
-                let offset = r.offset();
-                let function_type = match r.u8()? {
-                    0 => DebugFunctionType::Method,
-                    1 => DebugFunctionType::Getter,
-                    2 => DebugFunctionType::Setter,
-                    value => return Err(Error::InvalidDebugFunctionType { offset, value }),
-                };
-                Ok(DebugFunction {
-                    object_name,
-                    state_name,
-                    function_name,
-                    function_type,
-                    instruction_line_numbers: r.vec(Self::u16)?,
-                })
-            })?,
+            functions: self.list(Self::debug_function)?,
         })
     }
 }
@@ -229,10 +262,11 @@ impl<'a> PexFile<'a> {
         let src_file_name = r.string()?;
         let user_name = r.string()?;
         let machine_name = r.string()?;
-        let string_table = r.vec(Reader::string)?;
-        let debug_info = if r.u8()? != 0 { Some(r.debug_info()?) } else { None };
-        let user_flags = r.vec(|r| Ok(UserFlag { name: r.string_id()?, flag_index: r.u8()? }))?;
-        let objects = r.vec(Reader::object)?;
+        let string_table = r.list(Reader::string)?;
+        let has_debug_info = r.u8()? != 0;
+        let debug_info = r.optional(has_debug_info, Reader::debug_info)?;
+        let user_flags = r.list(Reader::user_flag)?;
+        let objects = r.list(Reader::object)?;
         if !r.remaining.is_empty() {
             return Err(Error::TrailingBytes { offset: r.offset(), len: r.remaining.len() });
         }

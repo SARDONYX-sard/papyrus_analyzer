@@ -58,6 +58,12 @@ impl<'a> PexStr<'a> {
         }
     }
 
+    /// Whether the string is `text`, ignoring ASCII case like the game does.
+    /// Compares the raw bytes: nothing is decoded.
+    pub fn eq_ignore_ascii_case(&self, text: &str) -> bool {
+        self.0.eq_ignore_ascii_case(text.as_bytes())
+    }
+
     /// An owned copy, independent of the input bytes.
     pub fn into_owned(self) -> PexStr<'static> {
         PexStr(Cow::Owned(self.0.into_owned()))
@@ -654,13 +660,15 @@ impl<'a> PexFile<'a> {
     pub fn find_string(&self, text: &str) -> Option<StringId> {
         self.string_table
             .iter()
-            .position(|s| s.as_bytes().eq_ignore_ascii_case(text.as_bytes()))
+            .position(|s| s.eq_ignore_ascii_case(text))
             .map(|i| StringId(i as u16))
     }
 
-    /// An object by name.
+    /// An object by name, ignoring ASCII case.
     pub fn object(&self, name: &str) -> Option<&Object> {
-        self.objects.iter().find(|obj| self.str(obj.name).eq_ignore_ascii_case(name))
+        self.objects.iter().find(|obj| {
+            self.string_table.get(obj.name.index()).is_some_and(|s| s.eq_ignore_ascii_case(name))
+        })
     }
 
     /// An independent copy that does not borrow the input bytes.

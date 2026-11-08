@@ -2,16 +2,24 @@
 //!
 //! Code generation produces one [`FunctionIr`] per function: instructions
 //! with symbolic labels and operands by name. Optimization passes
-//! ([`crate::opt`]) rewrite it, and [`FunctionIr::lower`] resolves labels to
-//! the relative jump offsets of the `.pex` format.
+//! ([`crate::opt`]) rewrite it, and the assembler (`script.rs`) resolves
+//! labels to the relative jump offsets of the `.pex` format with
+//! [`FunctionIr::label_positions`].
+//!
+//! Names are [`Name`]s: interned, `Copy`, and compared ignoring ASCII case
+//! like Papyrus does, so copying an operand never allocates.
 
+use std::fmt;
+
+use papyrus_ide::index::TypeRef;
+use papyrus_intern::Name;
 use papyrus_pex::pex::OpCode;
 
 /// A value used by an instruction.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Operand {
     /// A variable, parameter, property or script name, `self`, `::NoneVar`, ...
-    Var(String),
+    Var(Name),
     /// `None`
     None,
     /// An integer constant.
@@ -26,8 +34,8 @@ pub enum Operand {
 
 impl Operand {
     /// A variable operand.
-    pub fn var(name: impl Into<String>) -> Operand {
-        Operand::Var(name.into())
+    pub fn var(name: &str) -> Operand {
+        Operand::Var(Name::new(name))
     }
 
     /// Whether the operand is a constant.
@@ -36,9 +44,9 @@ impl Operand {
     }
 
     /// The variable name, for variable operands.
-    pub fn as_var(&self) -> Option<&str> {
+    pub fn as_var(&self) -> Option<Name> {
         match self {
-            Operand::Var(v) => Some(v),
+            Operand::Var(v) => Some(*v),
             _ => None,
         }
     }
@@ -72,13 +80,20 @@ pub enum Inst {
     Label(Label),
 }
 
-/// A typed slot of a function.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A typed slot of a function: a parameter, a local or a temporary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Slot {
     /// The name.
-    pub name: String,
-    /// The type name.
-    pub ty: String,
+    pub name: Name,
+    /// The type; `None` for the `None` type (`::NoneVar`).
+    pub ty: Option<TypeRef>,
+}
+
+impl Slot {
+    /// A slot named `name` of type `ty`.
+    pub fn new(name: &str, ty: Option<TypeRef>) -> Slot {
+        Slot { name: Name::new(name), ty }
+    }
 }
 
 /// The code of one function, event or property accessor.
@@ -92,21 +107,10 @@ pub struct FunctionIr {
     pub code: Vec<(Inst, u32)>,
 }
 
-/// A lowered instruction: the opcode and the arguments with jump offsets.
-#[derive(Clone, Debug, PartialEq)]
-pub struct LoweredInst {
-    /// The opcode.
-    pub opcode: OpCode,
-    /// The arguments; jump offsets are `Operand::Int`.
-    pub args: Vec<Operand>,
-    /// The source line.
-    pub line: u32,
-}
-
-impl std::fmt::Display for Operand {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Operand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Operand::Var(v) => f.write_str(v),
+            Operand::Var(v) => f.write_str(v.as_str()),
             Operand::None => f.write_str("none"),
             Operand::Int(i) => write!(f, "{i}"),
             Operand::Float(x) => write!(f, "{x:?}"),
@@ -117,8 +121,8 @@ impl std::fmt::Display for Operand {
 }
 
 /// The code as assembly, labels as `@N`, for logs.
-impl std::fmt::Display for FunctionIr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for FunctionIr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (inst, line) in &self.code {
             match inst {
                 Inst::Label(l) => writeln!(f, "  @{}:", l.0)?,
@@ -148,34 +152,26 @@ impl FunctionIr {
         self.code.iter().filter(|(i, _)| !matches!(i, Inst::Label(_))).count()
     }
 
-    /// Resolves labels: jump offsets are relative to the jump instruction.
-    pub fn lower(&self) -> Vec<LoweredInst> {
-        let mut positions = rustc_hash::FxHashMap::default();
-        let mut index = 0usize;
+    /// The instruction index of every label, by label number. A label that
+    /// is never placed stands for the end of the code.
+    pub fn label_positions(&self) -> Vec<usize> {
+        let count = self
+            .code
+            .iter()
+            .filter_map(|(inst, _)| match inst {
+                Inst::Label(l) | Inst::Jump { target: l, .. } => Some(l.0 as usize + 1),
+                Inst::Op { .. } => None,
+            })
+            .max()
+            .unwrap_or(0);
+        let mut positions = vec![None; count];
+        let mut index = 0;
         for (inst, _) in &self.code {
             match inst {
-                Inst::Label(l) => {
-                    positions.insert(*l, index);
-                }
+                Inst::Label(l) => positions[l.0 as usize] = Some(index),
                 _ => index += 1,
             }
         }
-        let mut out = Vec::with_capacity(index);
-        for (inst, line) in &self.code {
-            match inst {
-                Inst::Label(_) => {}
-                Inst::Op { opcode, args } => {
-                    out.push(LoweredInst { opcode: *opcode, args: args.clone(), line: *line })
-                }
-                Inst::Jump { opcode, cond, target } => {
-                    let here = out.len() as i64;
-                    let to = positions.get(target).copied().unwrap_or(index) as i64;
-                    let mut args: Vec<Operand> = cond.iter().cloned().collect();
-                    args.push(Operand::Int((to - here) as i32));
-                    out.push(LoweredInst { opcode: *opcode, args, line: *line });
-                }
-            }
-        }
-        out
+        positions.into_iter().map(|p| p.unwrap_or(index)).collect()
     }
 }

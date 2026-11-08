@@ -8,6 +8,8 @@
 
 use rustc_hash::FxHashMap;
 
+use papyrus_ide::index::TypeRef;
+use papyrus_intern::Name;
 use papyrus_pex::pex::OpCode;
 
 use crate::{
@@ -65,12 +67,12 @@ fn use_at(opcode: OpCode, pos: usize) -> Use {
 
 /// Replaces temporaries holding a cast constant by the converted constant.
 pub fn fold_constant_casts(ir: &mut FunctionIr) {
-    let types: FxHashMap<String, String> =
-        ir.locals.iter().map(|s| (s.name.clone(), s.ty.clone())).collect();
+    let types: FxHashMap<Name, Option<TypeRef>> =
+        ir.locals.iter().map(|s| (s.name, s.ty)).collect();
     let mut i = 0;
     while i < ir.code.len() {
         if let Some((temp, folded)) = constant_cast(&ir.code[i].0, &types)
-            && let Some(uses) = uses_in_block(ir, i, &temp)
+            && let Some(uses) = uses_in_block(ir, i, temp)
         {
             for (at, pos) in uses {
                 match &mut ir.code[at].0 {
@@ -86,25 +88,29 @@ pub fn fold_constant_casts(ir: &mut FunctionIr) {
     }
 }
 
-fn constant_cast(inst: &Inst, types: &FxHashMap<String, String>) -> Option<(String, Operand)> {
+/// `CAST ::tempN, constant`: the temporary and the converted constant.
+fn constant_cast(inst: &Inst, types: &FxHashMap<Name, Option<TypeRef>>) -> Option<(Name, Operand)> {
     let Inst::Op { opcode: OpCode::Cast, args } = inst else { return None };
     let [Operand::Var(temp), value] = args.as_slice() else { return None };
     let is_temp = temp
+        .as_str()
         .strip_prefix("::temp")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     if !is_temp || !value.is_const() {
         return None;
     }
+    // A temporary of type `None` holds no constant worth folding.
+    let to = (*types.get(temp)?)?;
     // Float to String depends on the formatting of the game; keep it.
-    if matches!(value, Operand::Float(_)) && types.get(temp)?.eq_ignore_ascii_case("string") {
+    if matches!(value, Operand::Float(_)) && to == TypeRef::STRING {
         return None;
     }
-    Some((temp.clone(), convert_const(value, types.get(temp)?)?))
+    Some((*temp, convert_const(value, to)?))
 }
 
 /// The uses of `temp` after its definition at `def`, when they are all in the
 /// same basic block and accept a constant.
-fn uses_in_block(ir: &FunctionIr, def: usize, temp: &str) -> Option<Vec<(usize, usize)>> {
+fn uses_in_block(ir: &FunctionIr, def: usize, temp: Name) -> Option<Vec<(usize, usize)>> {
     let is = |op: &Operand| op.as_var() == Some(temp);
     let mut uses = Vec::new();
     let mut end = ir.code.len();
@@ -151,7 +157,7 @@ fn uses_in_block(ir: &FunctionIr, def: usize, temp: &str) -> Option<Vec<(usize, 
 
 /// Whether some block (other than `def..end`) reads `temp` before writing
 /// it, i.e. may see the value of another block.
-fn live_in_any_block(ir: &FunctionIr, temp: &str, def: usize, end: usize) -> bool {
+fn live_in_any_block(ir: &FunctionIr, temp: Name, def: usize, end: usize) -> bool {
     let is = |op: &Operand| op.as_var() == Some(temp);
     // `None`: not seen yet in the current block; `Some(true)`: read first.
     let mut first_read: Option<bool> = None;
@@ -246,8 +252,8 @@ mod tests {
         let mut ir = FunctionIr {
             params: Vec::new(),
             locals: vec![
-                Slot { name: "::temp0".into(), ty: "Float".into() },
-                Slot { name: "::temp1".into(), ty: "Float".into() },
+                Slot::new("::temp0", Some(TypeRef::FLOAT)),
+                Slot::new("::temp1", Some(TypeRef::FLOAT)),
             ],
             code: vec![
                 op(OpCode::Cast, vec![Operand::var("::temp0"), Operand::Int(1)]),
