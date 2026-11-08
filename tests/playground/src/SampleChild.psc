@@ -1,4 +1,4 @@
-ScriptName Child extends Base
+ScriptName SampleChild extends SampleBase
 {Overrides of Base, full properties and an auto state. Hover `Parent`: the
 parent script, and the function it calls.}
 
@@ -38,7 +38,7 @@ EndFunction
 
 Function UseThings()
     Parent.UseThings()
-    Base other = Self as Base
+    SampleBase other = Self as SampleBase
     other.Count = 7
     Int n = other.Count
     Bool r = Ready

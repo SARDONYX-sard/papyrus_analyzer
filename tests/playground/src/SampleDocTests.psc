@@ -7,7 +7,7 @@
 ; ```papyrus
 ; Int sum = DocTests.Add(1, 2)
 ; ```
-ScriptName DocTests
+ScriptName SampleDocTests
 {Doc tests, like rustdoc.}
 
 ; # Examples

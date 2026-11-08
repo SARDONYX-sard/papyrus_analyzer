@@ -1,4 +1,4 @@
-ScriptName Base extends ObjectReference Hidden
+ScriptName SampleBase extends ObjectReference Hidden
 {Samples of the compiler: properties, variables, arithmetic, casts, strings,
 control flow, arrays and states. The parent of Child, which calls it with `Parent.`.}
 

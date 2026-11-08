@@ -1,5 +1,5 @@
 ; #![allow(all)] silences every lint of this file: comment it out to see them
-ScriptName Lints extends ObjectReference
+ScriptName SampleLints extends ObjectReference
 {One sample of each lint (`papyrus_analyzer lint --list`), then the attributes
 that allow them. Hover the attributes, complete them after `(` or `,`.
 The pedantic lints (unchecked_*, get_player_in_loop) are allowed by default: enable

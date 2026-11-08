@@ -1,4 +1,4 @@
-ScriptName ChildTests extends Child
+ScriptName ChildTests extends SampleChild
 {Tests of Child: extending it, they call its functions on Self. Run them with
 `papyrus_analyzer test`, ▶ Run Test, or ⚙ Debug: with a breakpoint on a line
 marked `watch:`, add the expressions of the comment to WATCH.}

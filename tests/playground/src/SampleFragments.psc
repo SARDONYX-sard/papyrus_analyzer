@@ -6,7 +6,7 @@
 ; `abDone == True`, with the first line commented out: only "Allow in this file").
 ;BEGIN FRAGMENT CODE - Do not edit anything between this and the end comment
 ;NEXT FRAGMENT INDEX 2
-Scriptname   Fragments Extends Quest Hidden
+Scriptname   SampleFragments Extends Quest Hidden
 
 ;BEGIN ALIAS PROPERTY Player
 ;ALIAS PROPERTY TYPE ReferenceAlias
@@ -17,7 +17,7 @@ ReferenceAlias Property Alias_Player Auto
 Function Fragment_1()
 ;BEGIN AUTOCAST TYPE Fragments
 Quest __temp = self as Quest
-Fragments kmyQuest = __temp as Fragments
+SampleFragments kmyQuest = __temp as SampleFragments
 ;END AUTOCAST
 ;BEGIN CODE
 	if(kmyQuest.abDone==True)
