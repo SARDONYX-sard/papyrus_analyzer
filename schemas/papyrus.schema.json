@@ -240,7 +240,7 @@
     "format": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Formatter settings shared by the team. Unset values come from .editorconfig, then from the editor.",
+      "description": "Formatter settings shared by the team. Unset values come from .editorconfig, then from the editor.\n\n# Notes\n\nPapyrus is case-insensitive, but Creation Kit may be case-sensitive in some contexts. Inconsistent casing between script names and their references (e.g. property types) may break existing Creation Kit bindings, such as UI bindings. Creation Kit's case-sensitivity in these contexts is undocumented.",
       "properties": {
         "workspace": {
           "type": "boolean",
