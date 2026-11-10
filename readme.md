@@ -100,10 +100,37 @@ SKYRIM_DIR = "${game:SkyrimSE}"
 sources = ["."]
 imports = ["${SKYRIM_DIR}/Data/Scripts/Source"]
 flags   = "${SKYRIM_DIR}/Data/Scripts/Source/TESV_Papyrus_Flags.flg"
+
+[lints]
+complexity   = "warn"
+unused-local = "deny"
+pedantic     = "allow"
+
+[format]
+indent-style  = "space"
+indent-size   = 4
+newline       = "lf"
+final-newline = true
+keyword-case  = "canonical"
 ```
 
 - Every setting: `$schema`, with [Tombi](https://github.com/tombi-toml/tombi) or [TOML Analyzer](https://github.com/Thoughts-with-friends/toml_analyzer).
 - Template: `Papyrus: Create papyrus.toml`.
+
+### Warning: Identifier casing
+
+The following settings are also available under `[format]`, but require some caution:
+
+```toml
+[format]
+script-case = "canonical"
+function-case = "canonical"
+property-case = "canonical"
+variable-case = "canonical"
+flag-case = "canonical"
+```
+
+Papyrus is case-insensitive, but Creation Kit may be case-sensitive in some contexts. Inconsistent casing between script declarations and references (e.g. property types) may break existing Creation Kit bindings, such as UI bindings. The exact behavior is undocumented.
 
 ### Variables
 
