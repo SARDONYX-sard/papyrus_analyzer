@@ -13,6 +13,10 @@
     "**/.git/objects/**": true,
     "**/target/**": true
   },
+  "rumdl.rules.disable": [
+    "MD013", // length 80
+    "MD041" // start #
+  ],
   "rust-analyzer.cargo.targetDir": true,
   "rust-analyzer.check.command": "clippy",
   "rust-analyzer.linkedProjects": ["Cargo.toml"],
