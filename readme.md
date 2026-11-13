@@ -117,22 +117,21 @@ keyword-case  = "canonical"
 - Every setting: `$schema`, with [Tombi](https://github.com/tombi-toml/tombi) or [TOML Analyzer](https://github.com/Thoughts-with-friends/toml_analyzer).
 - Template: `Papyrus: Create papyrus.toml`.
 
-### Warning: Identifier casing
+### Identifier casing
 
-The following settings are also available under `[format]`, but require some caution:
+The formatter keeps names as written. Their spelling is the `name-case` lint, which checks the scripts of the workspace only (imported scripts are left alone) and has a quick fix:
 
 ```toml
-[format]
-script-case = "canonical"
-function-case = "canonical"
-property-case = "canonical"
-variable-case = "canonical"
-flag-case = "canonical"
+[lints]
+# canonical (the definition) | preserve (not checked) | PascalCase | camelCase | lowercase | UPPERCASE
+name-case = { level = "warn", script = "canonical", function = "canonical", property = "canonical", variable = "canonical", flag = "canonical" }
 ```
 
-Papyrus is case-insensitive, but Creation Kit may be case-sensitive in some contexts. Inconsistent casing between script declarations and references (e.g. property types) may break existing Creation Kit bindings, such as UI bindings. The exact behavior is undocumented.
+Papyrus is case-insensitive, but Creation Kit may be case-sensitive in some contexts. Script and property names are stored in the `.pex`, and changing their casing (e.g. of property types) may break existing Creation Kit bindings, such as UI bindings. The exact behavior is undocumented: review these fixes before applying them.
 
-For this reason, `script-case` and `property-case` accept only `canonical` (the spelling of the `ScriptName` or the property declaration) and `preserve`. `canonical` follows the `ScriptName` line, not the file name: keep both spelled alike, e.g. `ScriptName MEP_CageManager` in `MEP_CageManager.psc`.
+`canonical` follows the `ScriptName` line, not the file name: keep both spelled alike, e.g. `ScriptName MEP_CageManager` in `MEP_CageManager.psc` (the `script-name-case` lint).
+
+The `script-case`, `function-case`, `property-case`, `variable-case` and `flag-case` settings of `[format]` from earlier versions are ignored, with a warning.
 
 ### Variables
 

@@ -3,6 +3,7 @@
 pub(crate) mod bool_literal_comparison;
 pub(crate) mod get_player_in_loop;
 pub(crate) mod index_out_of_bounds;
+pub(crate) mod name_case;
 pub(crate) mod redundant_cast;
 pub(crate) mod repeating_update;
 pub(crate) mod script_name_case;

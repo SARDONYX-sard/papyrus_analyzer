@@ -2,27 +2,20 @@
 //! same options as the editor: `.editorconfig`, then `[format]` of
 //! `papyrus.toml`.
 //!
-//! Names are written like their definition, as in the editor: the scripts
-//! are resolved against the imports of the `papyrus.toml` of the current
-//! directory (or its ancestors) and its flags file; without manifest, against
-//! the game scripts of `SKYRIM_DIR`. Only the scripts the formatted ones use
-//! are read.
+//! Names are kept as written: their spelling is the `name-case` lint.
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::{Path, PathBuf};
 
-use papyrus_ide::{FileId, Workspace};
+use papyrus_ide::Workspace;
 
 const USAGE: &str = "\
 usage: papyrus_analyzer fmt [OPTIONS] [PATH]...
 
 Formats scripts (directories recursively; default: the current directory)
-with .editorconfig, then [format] of papyrus.toml. Names are written like
-their definition, resolved against the imports of papyrus.toml.
+with .editorconfig, then [format] of papyrus.toml. Names are kept as
+written (see the `name-case` lint).
 
 options:
   --check      only list the unformatted files; exit code 1 if any
@@ -48,28 +41,13 @@ pub(crate) fn run(args: &[String]) -> i32 {
     scripts.retain(|s| !papyrus_project::format_excludes(s));
 
     let sources: Vec<Result<Source, String>> = scripts.iter().map(|s| Source::read(s)).collect();
-    let mut ws = workspace(&scripts);
-    let files: Vec<Option<FileId>> = scripts
-        .iter()
-        .zip(&sources)
-        .map(|(path, src)| {
-            // The text formatted, so that the offsets of the names match.
-            let src = src.as_ref().ok()?;
-            Some(ws.set_open(path.clone(), Arc::from(src.text.as_str()), 0))
-        })
-        .collect();
 
     // Files are independent: formatted in parallel, reported in order.
     use rayon::prelude::*;
     let results: Vec<Result<bool, String>> = scripts
         .par_iter()
         .zip(&sources)
-        .zip(&files)
-        .map(|((path, src), file)| {
-            let src = src.as_ref().map_err(Clone::clone)?;
-            let names = file.map(|f| names(&ws, f)).unwrap_or_default();
-            format_file(path, src, check, names)
-        })
+        .map(|(path, src)| format_file(path, src.as_ref().map_err(Clone::clone)?, check))
         .collect();
     let mut failed = false;
     let mut changed = 0;
@@ -117,16 +95,8 @@ impl Source {
 }
 
 /// Formats one file; returns whether it changed (or would change).
-fn format_file(
-    path: &Path,
-    src: &Source,
-    check: bool,
-    names: papyrus_fmt::Names,
-) -> Result<bool, String> {
-    let options = papyrus_fmt::FormatOptions {
-        names: Arc::new(names),
-        ..papyrus_project::format_options_for(path, |_| {})
-    };
+fn format_file(path: &Path, src: &Source, check: bool) -> Result<bool, String> {
+    let options = papyrus_project::format_options_for(path, |_| {});
     let formatted = papyrus_fmt::format(&src.text, &options).map_err(|e| e.to_string())?;
     if formatted == src.text {
         return Ok(false);
@@ -140,24 +110,6 @@ fn format_file(
         std::fs::write(path, out).map_err(|e| e.to_string())?;
     }
     Ok(true)
-}
-
-/// The definitions of the names of `file`, for the formatter.
-pub(crate) fn names(ws: &Workspace, file: FileId) -> papyrus_fmt::Names {
-    use papyrus_fmt::NameKind as Fmt;
-    use papyrus_ide::NameKind as Ide;
-    let mut names = papyrus_fmt::Names::default();
-    for n in papyrus_ide::name_spellings(ws, file) {
-        let kind = match n.kind {
-            Ide::Script => Fmt::Script,
-            Ide::Function => Fmt::Function,
-            Ide::Property => Fmt::Property,
-            Ide::Variable => Fmt::Variable,
-            Ide::Flag => Fmt::Flag,
-        };
-        names.insert(n.range.start().into(), kind, n.spelling);
-    }
-    names
 }
 
 /// A workspace with `scripts`, the scripts they use from the imports and the

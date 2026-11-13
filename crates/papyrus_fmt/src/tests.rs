@@ -137,41 +137,35 @@ fn keyword_cases_and_overrides() {
 }
 
 #[test]
-fn names_follow_their_definition() {
-    let src = "scriptname foo extends quest hidden\nactor property a auto\nfunction f(objectreference r)\ndebug.trace(\"actor\")\nendfunction\n";
-    // What the language server resolves, by start offset.
-    let defs = [
-        ("quest", NameKind::Script, "Quest"),
-        ("hidden", NameKind::Flag, "Hidden"),
-        ("actor property", NameKind::Script, "Actor"),
-        ("objectreference", NameKind::Script, "ObjectReference"),
-        ("debug", NameKind::Script, "Debug"),
-        ("trace", NameKind::Function, "Trace"),
-        ("r)", NameKind::Variable, "R"),
-    ];
-    let mut names = Names::default();
-    for (at, kind, spelling) in defs {
-        names.insert(src.find(at).unwrap() as u32, kind, spelling.to_owned());
-    }
-    let options = FormatOptions { names: names.into(), ..FormatOptions::default() };
+fn names_are_kept_as_written() {
+    // Issue #4: Creation Kit may bind script and property names with case;
+    // their spelling is the `name-case` lint, not the formatter.
+    let src = "scriptname foo extends quest hidden
+mep_cagemanager property a auto
+function f(objectreference r)
+debug.trace(\"actor\")
+endfunction
+";
     assert_eq!(
-        format(src, &options).unwrap(),
-        "ScriptName foo extends Quest Hidden\nActor Property a Auto\nFunction f(ObjectReference R)\n    Debug.Trace(\"actor\")\nEndFunction\n"
+        format(src, &FormatOptions::default()).unwrap(),
+        "ScriptName foo extends quest hidden
+mep_cagemanager Property a Auto
+Function f(objectreference r)
+    debug.trace(\"actor\")
+EndFunction
+"
     );
-    // Each kind has its case; `Canonical` is the definition.
-    let with = |name_cases| {
-        let options = FormatOptions { name_cases, ..options.clone() };
-        format(src, &options).unwrap()
-    };
-    let out = with(NameCases {
-        scripts: Case::Preserve,
-        functions: Case::CamelCase,
-        flags: Case::Uppercase,
-        variables: Case::Preserve,
-        ..NameCases::default()
-    });
-    assert!(out.starts_with("ScriptName foo extends quest HIDDEN"), "{out}");
-    assert!(out.contains("debug.trace(") && out.contains("(objectreference r)"), "{out}");
+}
+
+#[test]
+fn name_spelling_starts_from_the_definition() {
+    let spell = |case: Case| case.name_spelling("GetValue", "getVALUE").into_owned();
+    assert_eq!(spell(Case::Canonical), "GetValue");
+    assert_eq!(spell(Case::Preserve), "getVALUE");
+    assert_eq!(spell(Case::PascalCase), "GetValue");
+    assert_eq!(spell(Case::CamelCase), "getValue");
+    assert_eq!(spell(Case::Lowercase), "getvalue");
+    assert_eq!(spell(Case::Uppercase), "GETVALUE");
 }
 
 #[test]

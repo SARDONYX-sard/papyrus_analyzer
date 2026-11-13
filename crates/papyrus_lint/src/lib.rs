@@ -18,6 +18,8 @@
 pub mod ignore;
 mod lints;
 
+pub use lints::name_case::NameCases;
+
 use std::{fmt, str::FromStr};
 
 use papyrus_ide::{
@@ -138,6 +140,7 @@ pub const LINTS: &[Lint] = &[
     lints::unchecked_none::CALL,
     lints::get_player_in_loop::LINT,
     lints::script_name_case::LINT,
+    lints::name_case::LINT,
 ];
 
 /// The lint named `code`.
@@ -163,6 +166,8 @@ pub fn is_known_name(name: &str) -> bool {
 pub struct LintConfig {
     settings: Vec<(String, Level)>,
     exclude: stdx::PathExcludes,
+    /// The cases of the `name-case` lint.
+    pub name_cases: NameCases,
 }
 
 impl LintConfig {
@@ -236,6 +241,9 @@ pub fn lint_source(
             Level::Deny => Severity::Error,
         };
         let start = out.len();
+        if lint.code == lints::name_case::CODE {
+            lints::name_case::run(&sema, config, &mut out);
+        }
         (lint.run)(&sema, &mut out);
         for d in &mut out[start..] {
             d.severity = severity;
@@ -280,7 +288,12 @@ pub fn fixes(ws: &Workspace, file: FileId, range: TextRange, config: &LintConfig
     }
     let handlers: Vec<Handler> =
         LINTS.iter().filter(|l| config.level(l) != Level::Allow).filter_map(|l| l.fix).collect();
-    papyrus_ide::assists::run_handlers(ws, file, range, &handlers)
+    let mut out = papyrus_ide::assists::run_handlers(ws, file, range, &handlers);
+    // Its fix depends on the settings, which handlers do not see.
+    if find(lints::name_case::CODE).is_some_and(|l| config.level(l) != Level::Allow) {
+        lints::name_case::fixes(ws, file, range, config, &mut out);
+    }
+    out
 }
 
 /// Applies the fixes of every reported problem of `file`, until none is

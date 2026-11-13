@@ -11,6 +11,7 @@ license.workspace      = true
 doctest = false
 
 [dependencies]
+papyrus_fmt.workspace    = true
 papyrus_ide.workspace    = true
 papyrus_intern.workspace = true
 papyrus_parser.workspace = true
