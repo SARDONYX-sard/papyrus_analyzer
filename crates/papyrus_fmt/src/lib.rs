@@ -8,9 +8,9 @@
 //!   `State` and full `Property` blocks;
 //! - tokens are separated by one space, except around `.`, `,`, brackets,
 //!   calls and unary operators;
-//! - keywords get their canonical spelling (`endfunction` → `EndFunction`),
-//!   and names the spelling of their definition (`actor` → `Actor`,
-//!   `getvalue()` → `GetValue()`, see [`NameCases`] and [`Names`]);
+//! - keywords get their canonical spelling (`endfunction` → `EndFunction`);
+//!   names are kept as written: their spelling is a lint (`name-case`), as
+//!   Creation Kit may bind some of them with case;
 //! - runs of blank lines are collapsed, and blank lines at the start or the
 //!   end of a block are removed;
 //! - trailing whitespace is removed and the file ends with one line break.
@@ -47,8 +47,8 @@ pub enum Indent {
     Spaces(u8),
 }
 
-/// The spelling of keywords and of names, named like the `rename_all` cases
-/// of serde. Names start from their definition, see [`NameCases`].
+/// The spelling of keywords, and of names for the `name-case` lint, named
+/// like the `rename_all` cases of serde. Names start from their definition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Case {
     /// Keywords: `PascalCase`, except the operator-like `as` and `extends`,
@@ -68,6 +68,32 @@ pub enum Case {
 }
 
 impl Case {
+    /// The spelling of a name `written` in a script, defined as `defined`:
+    /// `Canonical` is the definition, which `PascalCase` and `camelCase`
+    /// start from too.
+    pub fn name_spelling<'a>(
+        self,
+        defined: &'a str,
+        written: &'a str,
+    ) -> std::borrow::Cow<'a, str> {
+        use std::borrow::Cow;
+        let first = |upper: bool| {
+            let mut out = defined.to_owned();
+            if let Some(c) = out.get_mut(..1) {
+                if upper { c.make_ascii_uppercase() } else { c.make_ascii_lowercase() }
+            }
+            Cow::Owned(out)
+        };
+        match self {
+            Case::Preserve => Cow::Borrowed(written),
+            Case::Canonical => Cow::Borrowed(defined),
+            Case::PascalCase => first(true),
+            Case::CamelCase => first(false),
+            Case::Lowercase => Cow::Owned(defined.to_ascii_lowercase()),
+            Case::Uppercase => Cow::Owned(defined.to_ascii_uppercase()),
+        }
+    }
+
     /// The accepted names, for configuration files.
     pub const NAMES: [&'static str; 6] =
         ["canonical", "preserve", "PascalCase", "camelCase", "lowercase", "UPPERCASE"];
@@ -126,64 +152,6 @@ pub struct FormatOptions {
     /// `||`, like `max_width` of rustfmt; `0` (the default) keeps lines as
     /// written.
     pub max_width: usize,
-    /// Spelling of the names, by kind. `Canonical` is the spelling of the
-    /// definition, which `PascalCase` and `camelCase` start from too.
-    pub name_cases: NameCases,
-    /// The definitions of the names of the script: the formatter cannot know
-    /// them from the script alone. Names without one are kept as written.
-    pub names: std::sync::Arc<Names>,
-}
-
-/// The spelling of each kind of name.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NameCases {
-    /// Scripts: types, `extends`, `Import`, receivers like `Debug.Trace`.
-    pub scripts: Case,
-    /// Functions and events.
-    pub functions: Case,
-    /// Properties.
-    pub properties: Case,
-    /// Local variables, parameters and script variables.
-    pub variables: Case,
-    /// User flags such as `Hidden`.
-    pub flags: Case,
-}
-
-impl Default for NameCases {
-    fn default() -> Self {
-        let c = Case::Canonical;
-        NameCases { scripts: c, functions: c, properties: c, variables: c, flags: c }
-    }
-}
-
-/// The kind of a name, see [`NameCases`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum NameKind {
-    /// A script.
-    Script,
-    /// A function or an event.
-    Function,
-    /// A property.
-    Property,
-    /// A local variable, a parameter or a script variable.
-    Variable,
-    /// A user flag.
-    Flag,
-}
-
-/// The definitions of the identifiers of one script, by start offset.
-/// Papyrus ignores case: `actor`, `getvalue()` work, and are written like
-/// their definition: `Actor`, `GetValue()`.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Names {
-    defs: std::collections::BTreeMap<u32, (NameKind, String)>,
-}
-
-impl Names {
-    /// The identifier starting at `offset` is a `kind` defined as `spelling`.
-    pub fn insert(&mut self, offset: u32, kind: NameKind, spelling: String) {
-        self.defs.insert(offset, (kind, spelling));
-    }
 }
 
 impl Default for FormatOptions {
@@ -196,8 +164,6 @@ impl Default for FormatOptions {
             newline: Newline::Auto,
             final_newline: true,
             max_width: 0,
-            name_cases: NameCases::default(),
-            names: Default::default(),
         }
     }
 }
@@ -228,45 +194,6 @@ impl FormatOptions {
             }
             Case::Lowercase => Cow::Owned(pascal.to_ascii_lowercase()),
             Case::Uppercase => Cow::Owned(pascal.to_ascii_uppercase()),
-        }
-    }
-
-    /// The spelling of an identifier, from its definition; identifiers
-    /// without known definition are kept.
-    fn name_spelling<'t>(&'t self, tok: SyntaxToken<'t>) -> std::borrow::Cow<'t, str> {
-        use std::borrow::Cow;
-        let text = tok.text();
-        let Some((kind, defined)) = self.names.defs.get(&u32::from(tok.text_range().start()))
-        else {
-            return Cow::Borrowed(text);
-        };
-        // A stale definition (e.g. computed for another text) is ignored.
-        if !defined.eq_ignore_ascii_case(text) {
-            return Cow::Borrowed(text);
-        }
-        let case = match kind {
-            NameKind::Script => self.name_cases.scripts,
-            NameKind::Function => self.name_cases.functions,
-            NameKind::Property => self.name_cases.properties,
-            NameKind::Variable => self.name_cases.variables,
-            NameKind::Flag => self.name_cases.flags,
-        };
-        let first = |upper: bool| {
-            let mut out = defined.clone();
-            if upper {
-                out[..1].make_ascii_uppercase();
-            } else {
-                out[..1].make_ascii_lowercase();
-            }
-            Cow::Owned(out)
-        };
-        match case {
-            Case::Preserve => Cow::Borrowed(text),
-            Case::Canonical => Cow::Borrowed(defined),
-            Case::PascalCase => first(true),
-            Case::CamelCase => first(false),
-            Case::Lowercase => Cow::Owned(defined.to_ascii_lowercase()),
-            Case::Uppercase => Cow::Owned(defined.to_ascii_uppercase()),
         }
     }
 }
@@ -731,7 +658,6 @@ fn write_tokens(
                 None => out.push_str(tok.text()),
             },
             _ if kind.is_keyword() => out.push_str(&options.keyword_spelling(kind, tok.text())),
-            SyntaxKind::IDENT => out.push_str(&options.name_spelling(*tok)),
             _ => out.push_str(tok.text()),
         }
         if kind == SyntaxKind::COMMA {

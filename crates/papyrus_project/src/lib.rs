@@ -344,10 +344,9 @@ pub struct FormatSettings {
     pub keyword_case: Option<papyrus_fmt::Case>,
     /// `[format.keywords]`: spelling of single keywords, e.g. `as = "As"`.
     pub keywords: BTreeMap<String, String>,
-    /// `script-case`, `function-case`, `property-case`, `variable-case` and
-    /// `flag-case`, in this order: the spelling of names, `canonical` being
-    /// the one of their definition. See [`papyrus_fmt::NameCases`].
-    pub name_cases: [Option<papyrus_fmt::Case>; 5],
+    /// Problems that do not stop formatting, e.g. the `script-case` of
+    /// earlier versions, ignored now.
+    pub warnings: Vec<ManifestError>,
     /// `max-blank-lines`
     pub max_blank_lines: Option<usize>,
     /// `max-width`: longer lines break with `\`; `0`: never.
@@ -384,14 +383,6 @@ impl FormatSettings {
             options.keyword_case = case;
         }
         options.keyword_overrides.extend(self.keywords.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let n = &mut options.name_cases;
-        let targets =
-            [&mut n.scripts, &mut n.functions, &mut n.properties, &mut n.variables, &mut n.flags];
-        for (target, case) in targets.into_iter().zip(self.name_cases) {
-            if let Some(case) = case {
-                *target = case;
-            }
-        }
         if let Some(n) = self.max_blank_lines {
             options.max_blank_lines = n;
         }
@@ -442,6 +433,24 @@ pub(crate) fn lint_settings_into(
                 }
             }
             continue;
+        }
+        // `name-case = { script = "PascalCase", ... }`: the cases of the lint,
+        // with or without a level.
+        if name.eq_ignore_ascii_case("name-case")
+            && let toml::Value::Table(t) = value.get_ref()
+        {
+            for (key, case) in t.iter().filter(|(k, _)| *k != "level") {
+                let result = match case.as_str() {
+                    Some(case) => config.name_cases.set(key, case),
+                    None => Err(format!("`name-case.{key}` must be a string")),
+                };
+                if let Err(e) = result {
+                    errors.push(ManifestError::new(e, span.clone()));
+                }
+            }
+            if !t.contains_key("level") {
+                continue;
+            }
         }
         let level = match value.get_ref() {
             toml::Value::String(s) => Some(s.as_str()),
@@ -560,20 +569,25 @@ fn format_settings(
             Err(e) => errors.push(ManifestError::new(e, span(case.span()))),
         }
     }
+    // The spelling of names moved to the `name-case` lint: Creation Kit may
+    // bind script and property names with case, which formatting must not
+    // change behind the back of the user (#4).
     let name_cases = [
-        &raw.script_case,
-        &raw.function_case,
-        &raw.property_case,
-        &raw.variable_case,
-        &raw.flag_case,
+        ("script-case", "script", &raw.script_case),
+        ("function-case", "function", &raw.function_case),
+        ("property-case", "property", &raw.property_case),
+        ("variable-case", "variable", &raw.variable_case),
+        ("flag-case", "flag", &raw.flag_case),
     ];
-    for (out, case) in out.name_cases.iter_mut().zip(name_cases) {
-        if let Some(case) = case {
-            match case.get_ref().parse() {
-                Ok(c) => *out = Some(c),
-                Err(e) => errors.push(ManifestError::new(e, span(case.span()))),
-            }
-        }
+    for (key, kind, case) in name_cases {
+        let Some(case) = case else { continue };
+        out.warnings.push(ManifestError::new(
+            format!(
+                "`{key}` is ignored: the formatter keeps names as written; use \
+                 `[lints] name-case = {{ level = \"warn\", {kind} = \"...\" }}`"
+            ),
+            span(case.span()),
+        ));
     }
     for (keyword, spelling) in &raw.keywords {
         if papyrus_lexer::keyword(keyword).is_none() {
@@ -1008,6 +1022,7 @@ pub(crate) fn parse_with(
     let quiet = flag("build.quiet", &raw.build.quiet, |i| i.quiet, true);
     // Like `Cargo.toml`: only the tables asking for it, which set nothing else.
     let mut format = format_settings(&raw.format, &root, &mut resolver.errors);
+    let format_warnings = std::mem::take(&mut format.warnings);
     if raw.format.inherits()
         && let Some(i) = inherited
     {
@@ -1038,7 +1053,7 @@ pub(crate) fn parse_with(
     }
     let variables = resolver.used;
 
-    let mut warnings = Vec::new();
+    let mut warnings = format_warnings;
     for (path, raw) in sources.iter().zip(&raw_sources).chain(imports.iter().zip(own_imports)) {
         if !path.is_dir() {
             warnings.push(ManifestError::new(
@@ -1551,8 +1566,6 @@ mod tests {
         p.format.apply(&mut options);
         assert_eq!(options.indent, papyrus_fmt::Indent::Tabs);
         assert_eq!(options.keyword_case, papyrus_fmt::Case::CamelCase);
-        assert_eq!(options.name_cases.functions, papyrus_fmt::Case::Preserve);
-        assert_eq!(options.name_cases.scripts, papyrus_fmt::Case::Canonical);
         assert_eq!(options.newline, papyrus_fmt::Newline::CrLf);
         assert_eq!(options.keyword_overrides["as"], "As");
 
@@ -1565,6 +1578,25 @@ mod tests {
         let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
         assert_eq!(messages.len(), 4, "{messages:?}");
         assert!(errors.iter().all(|e| e.span.is_some()));
+    }
+
+    /// Issue #4: the spelling of names is the `name-case` lint; the old
+    /// settings are ignored with a warning, not an error.
+    #[test]
+    fn name_case_settings_are_ignored_with_a_warning() {
+        for key in ["script-case", "function-case", "property-case", "variable-case", "flag-case"] {
+            let text = format!(
+                "[format]
+{key} = \"lowercase\"
+"
+            );
+            let p = parse_str(&text).unwrap();
+            let found: Vec<_> =
+                p.warnings.iter().filter(|w| w.message.contains("ignored")).collect();
+            let [warning] = found.as_slice() else { panic!("{:?}", p.warnings) };
+            assert!(warning.message.contains(key), "{}", warning.message);
+            assert_eq!(&text[warning.span.clone().unwrap()], "\"lowercase\"");
+        }
     }
 
     #[test]
@@ -1934,6 +1966,35 @@ mod tests {
         let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
         assert_eq!(messages.len(), 2, "{messages:?}");
         assert!(messages[0].contains("bogus") && messages[1].contains("loud"));
+    }
+
+    #[test]
+    fn name_case_table() {
+        use papyrus_fmt::Case;
+        let p = parse_str(
+            "[lints]\nname-case = { level = \"deny\", script = \"PascalCase\", variable = \"preserve\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            p.lints.level(papyrus_lint::find("name-case").unwrap()),
+            papyrus_lint::Level::Deny
+        );
+        let cases = p.lints.name_cases;
+        assert_eq!((cases.script, cases.variable), (Case::PascalCase, Case::Preserve));
+        assert_eq!(cases.function, Case::Canonical);
+
+        // Cases alone keep the level of the group (pedantic: allow).
+        let p = parse_str("[lints]\nname-case = { function = \"camelCase\" }\n").unwrap();
+        assert_eq!(p.lints.name_cases.function, Case::CamelCase);
+        assert_eq!(
+            p.lints.level(papyrus_lint::find("name-case").unwrap()),
+            papyrus_lint::Level::Allow
+        );
+
+        let errors =
+            parse_str("[lints]\nname-case = { scripts = \"canonical\", flag = \"kebab\" }\n")
+                .unwrap_err();
+        assert_eq!(errors.len(), 2, "{errors:?}");
     }
 
     #[test]

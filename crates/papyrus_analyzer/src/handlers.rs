@@ -624,10 +624,6 @@ impl Server {
                 o.final_newline = final_newline;
             }
         });
-        let options = papyrus_fmt::FormatOptions {
-            names: crate::fmt::names(&self.ws, file).into(),
-            ..options
-        };
         match papyrus_fmt::format(&text, &options) {
             Ok(formatted) if formatted == *text => Some(Vec::new()),
             Ok(formatted) => {

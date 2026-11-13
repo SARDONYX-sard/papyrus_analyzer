@@ -234,6 +234,28 @@
         "get-player-in-loop": {
           "$ref": "#/properties/lints/definitions/level",
           "description": "pedantic: Game.GetPlayer() called in a loop."
+        },
+        "name-case": {
+          "description": "pedantic: a name spelled otherwise than its definition, in the scripts of the workspace (`actor` -> `Actor`). The table sets the case of each kind of name, e.g. { level = \"warn\", script = \"canonical\", function = \"PascalCase\" }. The fix respells the name; script and property names are stored in the .pex, and Creation Kit may bind them with case.",
+          "oneOf": [
+            { "type": "string", "enum": ["allow", "warn", "deny"] },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "level": { "type": "string", "enum": ["allow", "warn", "deny"] },
+                "script": { "$ref": "#/definitions/nameCase", "description": "Script names: types, extends, Import, receivers like Debug.Trace. canonical is the ScriptName (actor -> Actor)." },
+                "function": { "$ref": "#/definitions/nameCase", "description": "Functions and events. canonical is their declaration, or the one of the parent function they override (getvalue() -> GetValue())." },
+                "property": { "$ref": "#/definitions/nameCase", "description": "Properties. canonical is their declaration." },
+                "variable": { "$ref": "#/definitions/nameCase", "description": "Local variables, parameters and script variables. canonical is their declaration." },
+                "flag": { "$ref": "#/definitions/nameCase", "description": "User flags. canonical is the flags file (hidden -> Hidden)." }
+              }
+            }
+          ]
+        },
+        "script-name-case": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "style: a ScriptName spelled with another case than its file (`ScriptName myquest` in MyQuest.psc). The formatter spells the uses of a script like its ScriptName."
         }
       }
     },
@@ -275,26 +297,11 @@
             "UPPERCASE"
           ]
         },
-        "script-case": {
-          "$ref": "#/definitions/nameCase",
-          "description": "Spelling of script names: types, extends, Import, receivers like Debug.Trace. canonical is the ScriptName of the script (actor -> Actor)."
-        },
-        "function-case": {
-          "$ref": "#/definitions/nameCase",
-          "description": "Spelling of functions and events. canonical is their declaration, or the one of the parent function they override (getvalue() -> GetValue())."
-        },
-        "property-case": {
-          "$ref": "#/definitions/nameCase",
-          "description": "Spelling of properties. canonical is their declaration."
-        },
-        "variable-case": {
-          "$ref": "#/definitions/nameCase",
-          "description": "Spelling of local variables, parameters and script variables. canonical is their declaration."
-        },
-        "flag-case": {
-          "$ref": "#/definitions/nameCase",
-          "description": "Spelling of user flags. canonical is the flags file (hidden -> Hidden)."
-        },
+        "script-case": { "deprecated": true, "description": "Ignored: the formatter keeps names as written. Use `[lints] name-case = { script = \"...\" }`." },
+        "function-case": { "deprecated": true, "description": "Ignored: the formatter keeps names as written. Use `[lints] name-case = { function = \"...\" }`." },
+        "property-case": { "deprecated": true, "description": "Ignored: the formatter keeps names as written. Use `[lints] name-case = { property = \"...\" }`." },
+        "variable-case": { "deprecated": true, "description": "Ignored: the formatter keeps names as written. Use `[lints] name-case = { variable = \"...\" }`." },
+        "flag-case": { "deprecated": true, "description": "Ignored: the formatter keeps names as written. Use `[lints] name-case = { flag = \"...\" }`." },
         "keywords": {
           "description": "Spelling of single keywords, e.g. { as = \"As\" }. Only the case may change.",
           "additionalProperties": false,
@@ -496,7 +503,7 @@
         "lowercase",
         "UPPERCASE"
       ],
-      "markdownDescription": "`canonical`: as defined. `preserve`: as written. The other cases start from the definition. Names without known definition are kept."
+      "markdownDescription": "`canonical`: as defined. `preserve`: as written (not checked). The other cases start from the definition. Names without known definition are not checked."
     }
   }
 }

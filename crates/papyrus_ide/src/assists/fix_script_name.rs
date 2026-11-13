@@ -21,24 +21,50 @@ use crate::{
 };
 
 pub(crate) fn fix_script_name(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
-    let index = ctx.sema.index;
-    let (Some(name), Some(range)) = (index.name, index.name_range) else { return };
-    if ctx.range.intersect(header_line(ctx, range)).is_none() {
+    let Some((range, stem)) = mismatch(ctx) else { return };
+    if stem.eq_ignore_ascii_case(&ctx.sema.text[range]) {
         return;
     }
+    push(ctx, acc, range, stem, "fix_script_name", "script-name-mismatch");
+}
+
+/// Quick fix of the `script-name-case` lint: like [`fix_script_name`], for a
+/// script name spelled like its file but for the case (`ScriptName myquest`
+/// in `MyQuest.psc`). Not an assist of its own: the lint may be allowed.
+pub fn fix_script_name_case(ctx: &AssistCtx<'_>, acc: &mut Vec<Assist>) {
+    let Some((range, stem)) = mismatch(ctx) else { return };
+    if !stem.eq_ignore_ascii_case(&ctx.sema.text[range]) {
+        return;
+    }
+    push(ctx, acc, range, stem, "fix_script_name_case", "script-name-case");
+}
+
+/// The `ScriptName` and the file stem, when the selection is on the
+/// `ScriptName` line and they are not spelled alike.
+fn mismatch(ctx: &AssistCtx<'_>) -> Option<(papyrus_parser::TextRange, String)> {
+    let range = ctx.sema.index.name_range?;
+    ctx.range.intersect(header_line(ctx, range))?;
     let path = &ctx.sema.ws.file(ctx.sema.file).path;
-    let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { return };
-    if stem.eq_ignore_ascii_case(name.as_str()) {
-        return;
-    }
+    let stem = path.file_stem()?.to_string_lossy().into_owned();
+    (stem != ctx.sema.text[range]).then_some((range, stem))
+}
+
+fn push(
+    ctx: &AssistCtx<'_>,
+    acc: &mut Vec<Assist>,
+    range: papyrus_parser::TextRange,
+    stem: String,
+    id: &'static str,
+    fixes: &'static str,
+) {
     let (edits, other_files) = rename_edits(ctx, range, &stem);
     acc.push(Assist {
-        id: "fix_script_name",
+        id,
         label: format!("Rename the script to `{stem}`, like its file"),
         kind: AssistKind::QuickFix,
         target: range,
         edits,
-        fixes: Some("script-name-mismatch"),
+        fixes: Some(fixes),
         other_files,
     });
 }
@@ -86,7 +112,7 @@ fn header_line(ctx: &AssistCtx<'_>, name: papyrus_parser::TextRange) -> papyrus_
 mod tests {
     use std::{path::PathBuf, sync::Arc};
 
-    use super::fix_script_name;
+    use super::{fix_script_name, fix_script_name_case};
     use crate::{
         Workspace,
         assists::{
@@ -139,5 +165,18 @@ mod tests {
     fn not_when_matching() {
         // The test file is `T.psc`.
         check_assist_not_applicable(fix_script_name, "ScriptName $0t\n");
+    }
+
+    #[test]
+    fn case_fix_respells_like_the_file() {
+        check_assist_in(
+            fix_script_name_case,
+            "/ws/MEP_CageManager.psc",
+            "ScriptName mep_$0cagemanager extends Quest\n",
+            "ScriptName MEP_CageManager extends Quest\n",
+        );
+        // Other names are `script-name-mismatch`, the same spelling is fine.
+        check_assist_not_applicable(fix_script_name_case, "ScriptName $0Other\n");
+        check_assist_not_applicable(fix_script_name_case, "ScriptName $0T\n");
     }
 }
