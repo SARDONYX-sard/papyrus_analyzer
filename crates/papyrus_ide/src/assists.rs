@@ -94,6 +94,8 @@ impl<'a> AssistCtx<'a> {
     }
 }
 
+pub use fix_script_name::fix_script_name_case;
+
 /// An assist handler: pushes the assists applicable at the selection.
 pub type Handler = fn(&AssistCtx<'_>, &mut Vec<Assist>);
 

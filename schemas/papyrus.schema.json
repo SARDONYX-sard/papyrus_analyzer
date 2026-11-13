@@ -234,6 +234,10 @@
         "get-player-in-loop": {
           "$ref": "#/properties/lints/definitions/level",
           "description": "pedantic: Game.GetPlayer() called in a loop."
+        },
+        "script-name-case": {
+          "$ref": "#/properties/lints/definitions/level",
+          "description": "style: a ScriptName spelled with another case than its file (`ScriptName myquest` in MyQuest.psc). The formatter spells the uses of a script like its ScriptName."
         }
       }
     },

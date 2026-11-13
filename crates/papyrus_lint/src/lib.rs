@@ -137,6 +137,7 @@ pub const LINTS: &[Lint] = &[
     lints::unchecked_none::CAST,
     lints::unchecked_none::CALL,
     lints::get_player_in_loop::LINT,
+    lints::script_name_case::LINT,
 ];
 
 /// The lint named `code`.

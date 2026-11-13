@@ -5,6 +5,7 @@ pub(crate) mod get_player_in_loop;
 pub(crate) mod index_out_of_bounds;
 pub(crate) mod redundant_cast;
 pub(crate) mod repeating_update;
+pub(crate) mod script_name_case;
 pub(crate) mod self_assignment;
 pub(crate) mod unchecked_none;
 pub(crate) mod unknown_event;
