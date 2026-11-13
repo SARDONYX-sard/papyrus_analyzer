@@ -560,19 +560,29 @@ fn format_settings(
             Err(e) => errors.push(ManifestError::new(e, span(case.span()))),
         }
     }
+    // Script and property names are stored in the `.pex` and in the plugins
+    // bound to it, and Creation Kit compares some of them with case: only
+    // their definition (or the text as written) is safe to write.
     let name_cases = [
-        &raw.script_case,
-        &raw.function_case,
-        &raw.property_case,
-        &raw.variable_case,
-        &raw.flag_case,
+        ("script-case", true, &raw.script_case),
+        ("function-case", false, &raw.function_case),
+        ("property-case", true, &raw.property_case),
+        ("variable-case", false, &raw.variable_case),
+        ("flag-case", false, &raw.flag_case),
     ];
-    for (out, case) in out.name_cases.iter_mut().zip(name_cases) {
-        if let Some(case) = case {
-            match case.get_ref().parse() {
-                Ok(c) => *out = Some(c),
-                Err(e) => errors.push(ManifestError::new(e, span(case.span()))),
-            }
+    for (out, (key, bound, case)) in out.name_cases.iter_mut().zip(name_cases) {
+        let Some(case) = case else { continue };
+        match case.get_ref().parse() {
+            Ok(c @ (papyrus_fmt::Case::Canonical | papyrus_fmt::Case::Preserve)) => *out = Some(c),
+            Ok(_) if bound => errors.push(ManifestError::new(
+                format!(
+                    "`{key}` must be \"canonical\" or \"preserve\": Creation Kit may lose the \
+                     bindings of renamed scripts and properties"
+                ),
+                span(case.span()),
+            )),
+            Ok(c) => *out = Some(c),
+            Err(e) => errors.push(ManifestError::new(e, span(case.span()))),
         }
     }
     for (keyword, spelling) in &raw.keywords {
@@ -1565,6 +1575,27 @@ mod tests {
         let messages: Vec<_> = errors.iter().map(|e| e.message.as_str()).collect();
         assert_eq!(messages.len(), 4, "{messages:?}");
         assert!(errors.iter().all(|e| e.span.is_some()));
+    }
+
+    /// Issue #4: renaming scripts and properties may break Creation Kit
+    /// bindings, so only their definition or the text as written are allowed.
+    #[test]
+    fn script_and_property_case_keep_definitions() {
+        for key in ["script-case", "property-case"] {
+            for case in ["canonical", "preserve"] {
+                parse_str(&format!("[format]\n{key} = \"{case}\"\n")).unwrap();
+            }
+            for case in ["PascalCase", "camelCase", "lowercase", "UPPERCASE"] {
+                let text = format!("[format]\n{key} = \"{case}\"\n");
+                let errors = parse_str(&text).unwrap_err();
+                assert_eq!(errors.len(), 1, "{key} = {case}");
+                assert!(errors[0].message.contains(key), "{}", errors[0].message);
+                assert_eq!(&text[errors[0].span.clone().unwrap()], format!("\"{case}\""));
+            }
+        }
+        for key in ["function-case", "variable-case", "flag-case"] {
+            parse_str(&format!("[format]\n{key} = \"lowercase\"\n")).unwrap();
+        }
     }
 
     #[test]

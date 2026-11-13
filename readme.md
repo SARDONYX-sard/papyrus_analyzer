@@ -132,6 +132,8 @@ flag-case = "canonical"
 
 Papyrus is case-insensitive, but Creation Kit may be case-sensitive in some contexts. Inconsistent casing between script declarations and references (e.g. property types) may break existing Creation Kit bindings, such as UI bindings. The exact behavior is undocumented.
 
+For this reason, `script-case` and `property-case` accept only `canonical` (the spelling of the `ScriptName` or the property declaration) and `preserve`. `canonical` follows the `ScriptName` line, not the file name: keep both spelled alike, e.g. `ScriptName MEP_CageManager` in `MEP_CageManager.psc`.
+
 ### Variables
 
 `${NAME}`, first wins:

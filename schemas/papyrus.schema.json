@@ -276,16 +276,16 @@
           ]
         },
         "script-case": {
-          "$ref": "#/definitions/nameCase",
-          "description": "Spelling of script names: types, extends, Import, receivers like Debug.Trace. canonical is the ScriptName of the script (actor -> Actor)."
+          "$ref": "#/definitions/boundNameCase",
+          "description": "Spelling of script names: types, extends, Import, receivers like Debug.Trace. canonical is the ScriptName of the script (actor -> Actor). Only canonical or preserve: Creation Kit may lose the bindings of renamed scripts."
         },
         "function-case": {
           "$ref": "#/definitions/nameCase",
           "description": "Spelling of functions and events. canonical is their declaration, or the one of the parent function they override (getvalue() -> GetValue())."
         },
         "property-case": {
-          "$ref": "#/definitions/nameCase",
-          "description": "Spelling of properties. canonical is their declaration."
+          "$ref": "#/definitions/boundNameCase",
+          "description": "Spelling of properties. canonical is their declaration. Only canonical or preserve: Creation Kit may lose the bindings of renamed properties."
         },
         "variable-case": {
           "$ref": "#/definitions/nameCase",
@@ -497,6 +497,12 @@
         "UPPERCASE"
       ],
       "markdownDescription": "`canonical`: as defined. `preserve`: as written. The other cases start from the definition. Names without known definition are kept."
+    },
+    "boundNameCase": {
+      "default": "canonical",
+      "type": "string",
+      "enum": ["canonical", "preserve"],
+      "markdownDescription": "`canonical`: as defined. `preserve`: as written. Names without known definition are kept. Script and property names are stored in the `.pex` and bound by Creation Kit, so they are never respelled otherwise."
     }
   }
 }
