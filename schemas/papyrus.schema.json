@@ -236,7 +236,7 @@
           "description": "pedantic: Game.GetPlayer() called in a loop."
         },
         "name-case": {
-          "description": "style: a name spelled otherwise than its definition, in the scripts of the workspace (`actor` -> `Actor`). The table sets the case of each kind of name, e.g. { level = \"warn\", script = \"canonical\", function = \"PascalCase\" }. The fix respells the name; script and property names are stored in the .pex, and Creation Kit may bind them with case.",
+          "description": "pedantic: a name spelled otherwise than its definition, in the scripts of the workspace (`actor` -> `Actor`). The table sets the case of each kind of name, e.g. { level = \"warn\", script = \"canonical\", function = \"PascalCase\" }. The fix respells the name; script and property names are stored in the .pex, and Creation Kit may bind them with case.",
           "oneOf": [
             { "type": "string", "enum": ["allow", "warn", "deny"] },
             {

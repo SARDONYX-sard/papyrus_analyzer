@@ -43,7 +43,7 @@ pub(crate) const CODE: &str = "name-case";
 
 pub(crate) const LINT: Lint = Lint {
     code: CODE,
-    group: Group::Style,
+    group: Group::Pedantic,
     summary: "a name spelled otherwise than its definition (or the `name-case` setting)",
     run: |_, _| {},
     fix: None,
@@ -166,14 +166,33 @@ mod tests {
     use papyrus_fmt::Case;
     use papyrus_ide::{Origin, Workspace};
 
-    use crate::{LintConfig, fix_all, lint, test_utils::check};
+    use crate::{Level, LintConfig, fix_all, lint};
+
+    fn on() -> LintConfig {
+        let mut config = LintConfig::default();
+        config.set("name-case", Level::Warn).unwrap();
+        config
+    }
+
+    fn check(src: &str) -> Vec<String> {
+        let mut ws = Workspace::new();
+        let file = ws.set_open(PathBuf::from("/ws/T.psc"), Arc::from(src), 0);
+        lint(&ws, file, &on())
+            .into_iter()
+            .filter(|d| d.code == "name-case")
+            .map(|d| {
+                let line = src[..usize::from(d.range.start())].matches('\n').count() + 1;
+                format!("{line}: {}", d.message)
+            })
+            .collect()
+    }
 
     const SRC: &str = "ScriptName T\nInt Property Count Auto\nFunction GetCount()\nEndFunction\nFunction F(Int value)\n    count = VALUE\n    getcount()\n    t.getCOUNT()\nEndFunction\n";
 
     #[test]
     fn reports_names_spelled_otherwise_than_their_definition() {
         assert_eq!(
-            check("name-case", SRC),
+            check(SRC),
             [
                 "6: `count` is spelled `Count`",
                 "6: `VALUE` is spelled `value`",
@@ -186,7 +205,7 @@ mod tests {
 
     #[test]
     fn each_kind_has_its_case() {
-        let mut config = LintConfig::default();
+        let mut config = on();
         config.name_cases.variable = Case::Preserve;
         config.name_cases.function = Case::Uppercase;
         let mut ws = Workspace::new();
@@ -213,7 +232,7 @@ mod tests {
     fn fix_respells() {
         let mut ws = Workspace::new();
         let file = ws.set_open(PathBuf::from("/ws/T.psc"), Arc::from(SRC), 0);
-        let (text, _) = fix_all(&mut ws, file, &LintConfig::default(), false);
+        let (text, _) = fix_all(&mut ws, file, &on(), false);
         assert!(text.contains("    Count = value\n    GetCount()\n    T.GetCount()\n"), "{text}");
     }
 
@@ -223,6 +242,6 @@ mod tests {
         let src = "ScriptName Lib\nFunction Go() Global\n    go()\nEndFunction\n";
         let file = ws.set_open(PathBuf::from("/game/Lib.psc"), Arc::from(src), 0);
         ws.set_origin(file, Origin::Import(0));
-        assert!(lint(&ws, file, &LintConfig::default()).iter().all(|d| d.code != "name-case"));
+        assert!(lint(&ws, file, &on()).iter().all(|d| d.code != "name-case"));
     }
 }

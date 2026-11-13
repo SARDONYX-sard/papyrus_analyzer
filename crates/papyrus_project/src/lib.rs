@@ -1983,12 +1983,12 @@ mod tests {
         assert_eq!((cases.script, cases.variable), (Case::PascalCase, Case::Preserve));
         assert_eq!(cases.function, Case::Canonical);
 
-        // Cases alone keep the level of the group.
+        // Cases alone keep the level of the group (pedantic: allow).
         let p = parse_str("[lints]\nname-case = { function = \"camelCase\" }\n").unwrap();
         assert_eq!(p.lints.name_cases.function, Case::CamelCase);
         assert_eq!(
             p.lints.level(papyrus_lint::find("name-case").unwrap()),
-            papyrus_lint::Level::Warn
+            papyrus_lint::Level::Allow
         );
 
         let errors =

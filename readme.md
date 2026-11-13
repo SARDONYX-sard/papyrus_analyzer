@@ -119,7 +119,7 @@ keyword-case  = "canonical"
 
 ### Identifier casing
 
-The formatter keeps names as written. Their spelling is the `name-case` lint, which checks the scripts of the workspace only (imported scripts are left alone) and has a quick fix:
+The formatter keeps names as written. Their spelling is the `name-case` lint (pedantic: off by default), which checks the scripts of the workspace only (imported scripts are left alone) and has a quick fix:
 
 ```toml
 [lints]
