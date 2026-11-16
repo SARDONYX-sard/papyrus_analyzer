@@ -2,7 +2,7 @@ name: setup-papyrus_analyzer
 description: >-
   Install papyrus_analyzer, the language server, compiler, linter and
   formatter of Papyrus scripts, on the PATH: the executable of a release,
-  downloaded, so no Rust toolchain or build is needed.
+  downloaded from its archive, so no Rust toolchain or build is needed.
 author: SARDONYX
 branding:
   icon: download
@@ -11,10 +11,9 @@ branding:
 inputs:
   version:
     description: >-
-      The release to install: a tag such as `0.6.0`, or `latest`. Empty (the
-      default) means the tag the action is used at (`@0.6.0`), or `latest`
-      when it is used at a branch or a commit. Releases before 0.6.0 have no
-      executable alone and cannot be installed.
+      The release to install: a tag such as `0.5.0`, or `latest`. Empty (the
+      default) means the tag the action is used at (`@0.5.0`), or `latest`
+      when it is used at a branch or a commit.
     required: false
     default: ""
 
@@ -39,11 +38,11 @@ runs:
       run: |
         set -euo pipefail
 
-        # The targets of the releases (.github/workflows/build.yaml).
+        # The targets and archives of the releases (.github/workflows/build.yaml).
         case "$RUNNER_OS-$RUNNER_ARCH" in
-          Linux-X64) target=x86_64-unknown-linux-gnu ;;
-          macOS-ARM64) target=aarch64-apple-darwin ;;
-          Windows-X64) target=x86_64-pc-windows-msvc ;;
+          Linux-X64) target=x86_64-unknown-linux-gnu archive=tar.gz ;;
+          macOS-ARM64) target=aarch64-apple-darwin archive=tar.gz ;;
+          Windows-X64) target=x86_64-pc-windows-msvc archive=zip ;;
           *)
             echo "::error::papyrus_analyzer has no release for $RUNNER_OS $RUNNER_ARCH"
             exit 1
@@ -62,7 +61,7 @@ runs:
           fi
         fi
 
-        asset="papyrus_analyzer-$target$exe"
+        asset="papyrus_analyzer-$target.$archive"
         if [ "$version" = latest ]; then
           url="https://github.com/$REPOSITORY/releases/latest/download/$asset"
         else
@@ -71,10 +70,21 @@ runs:
 
         dir="$RUNNER_TEMP/papyrus_analyzer/$version"
         mkdir -p "$dir"
-        path="$dir/papyrus_analyzer$exe"
         echo "Downloading $url"
-        if ! curl --fail --silent --show-error --location --retry 3 --output "$path" "$url"; then
+        if ! curl --fail --silent --show-error --location --retry 3 --output "$dir/$asset" "$url"; then
           echo "::error::cannot download $asset of the release $version of $REPOSITORY"
+          exit 1
+        fi
+        # The executable and LICENSES.toml, at the root of the archive.
+        if [ "$archive" = zip ]; then
+          unzip -o -q "$dir/$asset" -d "$dir"
+        else
+          tar -xzf "$dir/$asset" -C "$dir"
+        fi
+        rm "$dir/$asset"
+        path="$dir/papyrus_analyzer$exe"
+        if [ ! -f "$path" ]; then
+          echo "::error::$asset has no papyrus_analyzer$exe"
           exit 1
         fi
         chmod +x "$path"

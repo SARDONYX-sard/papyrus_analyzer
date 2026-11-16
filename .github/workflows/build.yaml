@@ -1,10 +1,9 @@
 name: Build
 
-# Builds, for each platform, the VSIX, an archive (zip on Windows, tar.gz
-# elsewhere) and the bare executable (for `action.yaml`) of papyrus_analyzer:
-# the server, `lint`, `fmt` and the other subcommands. Pushes to main and pull
-# requests upload them as artifacts; tags build with `release-lto` and attach
-# them to the GitHub release.
+# Builds, for each platform, the VSIX and an archive (zip on Windows, tar.gz
+# elsewhere) of papyrus_analyzer: the server, `lint`, `fmt` and the other
+# subcommands. Pushes to main and pull requests upload them as artifacts; tags
+# build with `release-lto` and attach them to the GitHub release.
 on:
   push:
     branches: ["main"]
@@ -53,8 +52,6 @@ jobs:
     env:
       EXE: papyrus_analyzer${{ matrix.job.exe }}
       ASSET: papyrus_analyzer-${{ matrix.job.target }}.${{ matrix.job.archive }}
-      # The executable alone, downloaded by `action.yaml`.
-      BIN: papyrus_analyzer-${{ matrix.job.target }}${{ matrix.job.exe }}
 
     steps:
       - uses: actions/checkout@v7
@@ -78,7 +75,6 @@ jobs:
         run: |
           mkdir -p build/pkg
           cp "target/${{ matrix.job.target }}/${{ env.PROFILE }}/$EXE" build/pkg/
-          cp "target/${{ matrix.job.target }}/${{ env.PROFILE }}/$EXE" "build/$BIN"
           {
             echo '# SPDX-License-Identifier: Apache-2.0 OR MIT'
             echo '# SPDX-FileCopyrightText: (C) 2024 SARDONYX'
@@ -121,12 +117,11 @@ jobs:
           path: |
             build/*.vsix
             build/${{ env.ASSET }}
-            build/${{ env.BIN }}
 
       - name: Attach to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: ncipollo/release-action@v1.21.0
         with:
           allowUpdates: true
-          artifacts: build/*.vsix,build/${{ env.ASSET }},build/${{ env.BIN }}
+          artifacts: build/*.vsix,build/${{ env.ASSET }}
           omitBody: true

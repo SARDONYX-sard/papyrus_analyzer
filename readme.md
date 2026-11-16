@@ -59,7 +59,7 @@ Download: [releases](https://github.com/SARDONYX-sard/papyrus_analyzer/releases)
 
 The input `version` defaults to the tag the action is used at, else `latest`; the outputs `path` and `version` give the executable and the release installed.
 
-Each release from 0.6.0 carries the bare executables (`papyrus_analyzer-<target>[.exe]`) the action downloads, for Linux x64, macOS ARM64 and Windows x64.
+The action downloads the archive of the release (`papyrus_analyzer-<target>.zip` or `.tar.gz`) and extracts the executable, for Linux x64, macOS ARM64 and Windows x64. `version` may name any release, earlier ones included.
 
 ## VS Code
 
