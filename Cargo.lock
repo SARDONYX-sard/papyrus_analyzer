@@ -446,6 +446,7 @@ dependencies = [
  "papyrus_pex",
  "rayon",
  "rustc-hash",
+ "stdx",
  "tracing",
  "tracing-subscriber",
 ]

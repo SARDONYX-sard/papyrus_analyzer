@@ -128,13 +128,27 @@ fn write_outputs(
     if args.asm != AsmMode::None {
         let path = dir.join(format!("{name}.pas"));
         std::fs::write(&path, asm()).map_err(|e| format!("{}: {e}", path.display()))?;
+        set_file_time(&path, args)?;
         log::info!("wrote {}", path.display());
     }
     if args.asm != AsmMode::Only {
         let path = dir.join(format!("{name}.pex"));
         let bytes = pex.to_bytes().map_err(|e| format!("{}: {e}", path.display()))?;
         std::fs::write(&path, &bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        set_file_time(&path, args)?;
         log::info!("wrote {} ({} bytes)", path.display(), bytes.len());
     }
     Ok(())
+}
+
+/// Gives the written file the time of `-time`, like the header: the files
+/// of two builds are the same, dates included.
+fn set_file_time(path: &Path, args: &Args) -> Result<(), String> {
+    let Some(secs) = args.options.header.time else { return Ok(()) };
+    let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs.max(0) as u64);
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .and_then(|f| f.set_modified(time))
+        .map_err(|e| format!("{}: cannot set the modification time: {e}", path.display()))
 }

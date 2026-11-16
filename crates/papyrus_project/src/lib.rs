@@ -225,6 +225,7 @@ impl RawManifest {
         asks("build.release", flag(build.release.clone()));
         asks("build.final", flag(build.r#final.clone()));
         asks("build.quiet", flag(build.quiet.clone()));
+        asks("build.header", build.header.as_ref().is_some_and(RawHeader::inherits));
         out
     }
 }
@@ -650,6 +651,110 @@ struct RawBuild {
     release: Option<Inheritable<bool>>,
     r#final: Option<Inheritable<bool>>,
     quiet: Option<Inheritable<bool>>,
+    header: Option<RawHeader>,
+}
+
+/// `[build.header]`, see [`PexHeader`].
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+pub(crate) struct RawHeader {
+    workspace: Option<Spanned<bool>>,
+    user: Option<String>,
+    computer: Option<String>,
+    time: Option<Spanned<toml::Value>>,
+    source_time: Option<Spanned<toml::Value>>,
+}
+
+/// `[build.header]`: what the built-in compiler writes in the header of the
+/// `.pex` files, instead of the user, the machine and the times of the build.
+/// Unset values keep the defaults. Settings rather than `[compiler] args`, which
+/// `PapyrusCompiler.exe` would not accept.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PexHeader {
+    /// `user`: the user name (`-user`).
+    pub user: Option<String>,
+    /// `computer`: the machine name (`-computer`).
+    pub computer: Option<String>,
+    /// `time`: the compilation time and the time of the written files, in
+    /// seconds since 1970 (`-time`).
+    pub time: Option<i64>,
+    /// `source-time`: the modification time of the sources in the debug
+    /// info, in seconds since 1970 (`-sourcetime`).
+    pub source_time: Option<i64>,
+}
+
+impl PexHeader {
+    /// Whether nothing is set.
+    pub fn is_empty(&self) -> bool {
+        *self == PexHeader::default()
+    }
+
+    /// The arguments of the built-in compiler.
+    fn args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(user) = &self.user {
+            args.push(format!("-user={user}"));
+        }
+        if let Some(computer) = &self.computer {
+            args.push(format!("-computer={computer}"));
+        }
+        if let Some(time) = self.time {
+            args.push(format!("-time={time}"));
+        }
+        if let Some(time) = self.source_time {
+            args.push(format!("-sourcetime={time}"));
+        }
+        args
+    }
+}
+
+impl RawHeader {
+    /// `workspace = true`: `[workspace.build.header]`.
+    fn inherits(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|w| *w.get_ref())
+    }
+
+    /// Whether `workspace` is written, `true` or not.
+    pub(crate) fn has_workspace(&self) -> bool {
+        self.workspace.is_some()
+    }
+}
+
+/// `[build.header]`; the times are seconds since 1970 or UTC dates.
+pub(crate) fn pex_header(raw: Option<&RawHeader>, errors: &mut Vec<ManifestError>) -> PexHeader {
+    let Some(raw) = raw else { return PexHeader::default() };
+    // Like `[format]`: `workspace = true` alone.
+    if let Some(workspace) = &raw.workspace {
+        let own = raw.user.is_some()
+            || raw.computer.is_some()
+            || raw.time.is_some()
+            || raw.source_time.is_some();
+        if !*workspace.get_ref() {
+            errors.push(ManifestError::new("`workspace` cannot be false", span_of(workspace)));
+        } else if own {
+            errors.push(cannot_override("build.header", span_of(workspace)));
+        }
+    }
+    let mut time = |key: &str, value: &Option<Spanned<toml::Value>>| {
+        let value = value.as_ref()?;
+        let parsed = match value.get_ref() {
+            toml::Value::Integer(n) => stdx::parse_unix_time(&n.to_string()),
+            toml::Value::String(s) => stdx::parse_unix_time(s),
+            _ => Err("expected seconds since 1970 or a date like \"2024-01-31T12:00:00Z\"".into()),
+        };
+        parsed
+            .map_err(|e| {
+                errors
+                    .push(ManifestError::new(format!("`build.header.{key}`: {e}"), span_of(value)))
+            })
+            .ok()
+    };
+    PexHeader {
+        time: time("time", &raw.time),
+        source_time: time("source-time", &raw.source_time),
+        user: raw.user.clone(),
+        computer: raw.computer.clone(),
+    }
 }
 
 fn default_sources() -> Vec<Spanned<String>> {
@@ -706,6 +811,8 @@ pub struct Project {
     pub r#final: bool,
     /// `build.quiet`: only report errors.
     pub quiet: bool,
+    /// `[build.header]`
+    pub header: PexHeader,
     /// `[format]`: formatter settings.
     pub format: FormatSettings,
     /// `[lints]`: the levels of the lints.
@@ -1020,6 +1127,15 @@ pub(crate) fn parse_with(
     let release = flag("build.release", &raw.build.release, |i| i.release, false);
     let r#final = flag("build.final", &raw.build.r#final, |i| i.r#final, false);
     let quiet = flag("build.quiet", &raw.build.quiet, |i| i.quiet, true);
+    let mut header = pex_header(raw.build.header.as_ref(), &mut resolver.errors);
+    if raw.build.header.as_ref().is_some_and(RawHeader::inherits)
+        && let Some(i) = inherited
+    {
+        match &i.header {
+            Some(settings) => header = settings.clone(),
+            None => resolver.errors.push(not_defined("build.header")),
+        }
+    }
     // Like `Cargo.toml`: only the tables asking for it, which set nothing else.
     let mut format = format_settings(&raw.format, &root, &mut resolver.errors);
     let format_warnings = std::mem::take(&mut format.warnings);
@@ -1054,6 +1170,12 @@ pub(crate) fn parse_with(
     let variables = resolver.used;
 
     let mut warnings = format_warnings;
+    if compiler.is_some() && !header.is_empty() {
+        warnings.push(ManifestError::new(
+            "`[build.header]` is ignored with `[compiler] path`: only the built-in compiler writes it",
+            None,
+        ));
+    }
     for (path, raw) in sources.iter().zip(&raw_sources).chain(imports.iter().zip(own_imports)) {
         if !path.is_dir() {
             warnings.push(ManifestError::new(
@@ -1101,6 +1223,7 @@ pub(crate) fn parse_with(
         release,
         r#final,
         quiet,
+        header,
         format,
         lints,
         variables,
@@ -1263,6 +1386,7 @@ impl Project {
             release: false,
             r#final: false,
             quiet: true,
+            header: PexHeader::default(),
             format: FormatSettings::default(),
             lints: papyrus_lint::LintConfig::default(),
             variables: BTreeMap::new(),
@@ -1398,6 +1522,10 @@ impl Project {
             if on {
                 args.push(flag.to_owned());
             }
+        }
+        // `PapyrusCompiler.exe` has no such arguments.
+        if self.compiler.is_none() {
+            args.extend(self.header.args());
         }
         args.extend(self.extra_args.iter().cloned());
         Ok(CompileCommand { program, args, cwd: self.root.clone(), output })
@@ -1655,6 +1783,35 @@ mod tests {
     }
 
     #[test]
+    fn build_header() {
+        let text = "[build.header]\nuser = \"\"\ncomputer = \"CI\"\ntime = \"2024-01-31T12:00:00Z\"\nsource-time = 0\n";
+        let mut p = parse_str(text).unwrap();
+        let header = PexHeader {
+            user: Some(String::new()),
+            computer: Some("CI".to_owned()),
+            time: Some(1_706_702_400),
+            source_time: Some(0),
+        };
+        assert_eq!(p.header, header);
+        p.builtin_compiler = Some((PathBuf::from("pa"), Vec::new()));
+        let c = p.compile_file(Path::new("/m/X.psc")).unwrap();
+        for arg in ["-user=", "-computer=CI", "-time=1706702400", "-sourcetime=0"] {
+            assert!(c.args.iter().any(|a| a == arg), "{arg}: {:?}", c.args);
+        }
+
+        // `PapyrusCompiler.exe` gets none: a warning tells.
+        let official = parse_str(&format!("{}\n{text}", template("1.0.0"))).unwrap();
+        let c = official.compile_file(Path::new("/m/X.psc")).unwrap();
+        assert!(!c.args.iter().any(|a| a.starts_with("-user")), "{:?}", c.args);
+        assert!(official.warnings.iter().any(|w| w.message.contains("[build.header]")));
+
+        let errors =
+            parse_str("[build.header]\ntime = \"yesterday\"\nsource-time = true\n").unwrap_err();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().all(|e| e.span.is_some()));
+    }
+
+    #[test]
     fn workspace_members_inherit_and_see_dependencies() {
         let dir = std::env::temp_dir().join(format!("papyrus-ws-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1664,12 +1821,12 @@ mod tests {
         let w = |p: &str, text: &str| std::fs::write(dir.join(p), text).unwrap();
         w(
             "papyrus.toml",
-            "[var]\nMODS = \"mods\"\n[workspace]\nmembers = [\"${MODS}/*\"]\nexclude = [\"${MODS}/Old\"]\n[workspace.var]\nGAME = \"game\"\n[workspace.build]\nimports = [\"${GAME}\"]\nflags = \"${GAME}/f.flg\"\noptimize = false\n[workspace.lints]\nall = \"deny\"\n[workspace.format]\nindent-size = 2\n",
+            "[var]\nMODS = \"mods\"\n[workspace]\nmembers = [\"${MODS}/*\"]\nexclude = [\"${MODS}/Old\"]\n[workspace.var]\nGAME = \"game\"\n[workspace.build]\nimports = [\"${GAME}\"]\nflags = \"${GAME}/f.flg\"\noptimize = false\n[workspace.build.header]\nuser = \"\"\ntime = 0\n[workspace.lints]\nall = \"deny\"\n[workspace.format]\nindent-size = 2\n",
         );
         w("mods/Lib/papyrus.toml", "[package]\nname = \"Lib\"\n");
         w(
             "mods/App/papyrus.toml",
-            "[package]\nname = \"App\"\n[var]\nGAME.workspace = true\n[build]\noutput = \"${GAME}/out\"\nimports.workspace = true\nflags.workspace = true\noptimize.workspace = true\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nworkspace = true\n[format]\nworkspace = true\n",
+            "[package]\nname = \"App\"\n[var]\nGAME.workspace = true\n[build]\noutput = \"${GAME}/out\"\nimports.workspace = true\nflags.workspace = true\noptimize.workspace = true\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nworkspace = true\n[format]\nworkspace = true\n[build.header]\nworkspace = true\n",
         );
         w("mods/Old/papyrus.toml", "[package]\nname = \"Old\"\n");
 
@@ -1695,6 +1852,9 @@ mod tests {
         let level = |p: &Project, code| p.lints.level(papyrus_lint::find(code).unwrap());
         assert_eq!(level(app, "unreachable-code"), papyrus_lint::Level::Deny);
         assert_eq!(app.format.indent_size, Some(2));
+        let header = PexHeader { user: Some(String::new()), time: Some(0), ..PexHeader::default() };
+        assert_eq!(app.header, header);
+        assert!(ws.members[1].header.is_empty());
         assert_eq!(
             ws.member_for(&dir.join("mods/Lib/A.psc")).unwrap().name.as_deref(),
             Some("Lib")
@@ -1869,6 +2029,10 @@ mod tests {
         assert_eq!(lints.as_deref(), Some("`workspace` cannot be false"));
         let (_, format, _) = errors_of("[format]\nworkspace = false\n");
         assert_eq!(format.as_deref(), Some("`workspace` cannot be false"));
+        let (_, _, whole) = errors_of("[build.header]\nworkspace = false\n");
+        assert!(whole.unwrap().contains("`workspace` cannot be false"));
+        let (_, _, whole) = errors_of("[build.header]\nworkspace = true\nuser = \"\"\n");
+        assert!(whole.unwrap().contains("cannot override `workspace.build.header`"));
         let (lints, _, _) = errors_of("[lints]\nworkspace = \"yes\"\n");
         assert!(lints.is_some());
 

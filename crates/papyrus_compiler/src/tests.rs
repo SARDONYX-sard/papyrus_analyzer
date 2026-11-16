@@ -137,7 +137,7 @@ Float Function F(Float x)
     Return x
 EndFunction
 "#,
-        CompileOptions { optimize: true, debug_info: true },
+        CompileOptions { optimize: true, ..CompileOptions::default() },
         expect![[r#"
             .function F
             .localTable
@@ -160,4 +160,25 @@ EndFunction
             RETURN ::State
         "#]],
     );
+}
+
+#[test]
+fn header_follows_the_options() {
+    let mut ws = Workspace::new();
+    let file = ws.set_open(PathBuf::from("/ws/T.psc"), Arc::from("ScriptName T\n"), 0);
+    let header = crate::PexHeader {
+        user: Some(String::new()),
+        computer: Some("CI".to_owned()),
+        time: Some(1_706_702_400),
+        source_time: Some(42),
+    };
+    let options = CompileOptions { header, ..CompileOptions::default() };
+    let bytes = compile(&ws, file, &options).unwrap().to_bytes().unwrap();
+    let pex = PexFile::from_bytes(&bytes).unwrap();
+    assert_eq!(pex.user_name.decode(), "");
+    assert_eq!(pex.machine_name.decode(), "CI");
+    assert_eq!(pex.compilation_time, 1_706_702_400);
+    assert_eq!(pex.debug_info.unwrap().modification_time, 42);
+    // The same options, the same bytes.
+    assert_eq!(compile(&ws, file, &options).unwrap().to_bytes().unwrap(), bytes);
 }

@@ -14,6 +14,16 @@
 //!   -asmonly           only write the assembly
 //!   -release, -final   accepted for Fallout 4 compatibility; no effect
 //!   -nodebuginfo       leave out line numbers (not in the official compiler)
+//!   -user=<name>       user name of the header (default: `USERNAME`)
+//!   -computer=<name>   machine name of the header (default: `COMPUTERNAME`)
+//!   -time=<time>       compilation time of the header and modification time
+//!                      of the written files (default: `SOURCE_DATE_EPOCH`, else now)
+//!   -sourcetime=<time> source modification time of the debug info
+//!                      (default: the one of the file)
+//!
+//! `-user` to `-sourcetime` are not in the official compiler: they make
+//! builds reproducible, or keep names out of the released files. Times are
+//! seconds since 1970 or UTC dates, `2024-01-31` or `2024-01-31T12:00:00Z`.
 //!   -diagnostics=<f>   `human` (snippets, the default on a terminal) or
 //!                      `official` (`file(line,col): message`, the default otherwise,
 //!                      as `PapyrusCompiler.exe` prints them for problem matchers)
@@ -61,6 +71,13 @@ arguments:
   -keepasm           also write the assembly (.pas) next to the .pex
   -asmonly           only write the assembly
   -nodebuginfo       leave out line numbers
+  -user=<name>       user name written in the .pex (default: USERNAME)
+  -computer=<name>   machine name written in the .pex (default: COMPUTERNAME)
+  -time=<time>       compilation time written in the .pex, also the modification
+                     time of the written files (default: SOURCE_DATE_EPOCH, else now)
+  -sourcetime=<time> source modification time written in the debug info
+                     (default: the one of the file)
+                     times: seconds since 1970, or UTC 2024-01-31[T12:00:00Z]
   -diagnostics=<f>   human (default on a terminal) or official (file(line,col): message)
   -log[=<file>]      log what the compiler does, to stderr or a file
   -loglevel=<filter> log filter: error, warn, info (default), debug, trace
@@ -78,6 +95,9 @@ examples:
 
   Log what happens to a file, functions included:
     papyrus_compiler MyQuestScript -i=... -log=compile.log -loglevel=debug
+
+  Reproducible output, without the user and machine names:
+    papyrus_compiler Scripts\\Source -all -i=... -user= -computer= -time=0 -sourcetime=0
 
   In PowerShell, quote arguments containing dots: \"-f=TESV_Papyrus_Flags.flg\".";
 
@@ -187,6 +207,11 @@ impl Args {
                 "asmonly" => out.asm = AsmMode::Only,
                 "release" | "final" => {}
                 "nodebuginfo" => out.options.debug_info = false,
+                // `-user=` writes no name.
+                "user" => out.options.header.user = Some(value()?),
+                "computer" => out.options.header.computer = Some(value()?),
+                "time" => out.options.header.time = Some(parse_time(&value()?)?),
+                "sourcetime" => out.options.header.source_time = Some(parse_time(&value()?)?),
                 "diagnostics" => {
                     out.diagnostics = Some(match value()?.to_ascii_lowercase().as_str() {
                         "human" => DiagnosticFormat::Human,
@@ -205,8 +230,19 @@ impl Args {
                 _ => return Err(format!("unknown argument `{arg}`")),
             }
         }
+        if out.options.header.time.is_none()
+            && let Ok(epoch) = std::env::var("SOURCE_DATE_EPOCH")
+        {
+            let time = parse_time(&epoch).map_err(|e| format!("SOURCE_DATE_EPOCH: {e}"))?;
+            out.options.header.time = Some(time);
+        }
         Ok(out)
     }
+}
+
+/// A time of `-time` and `-sourcetime`, see [`stdx::parse_unix_time`].
+fn parse_time(text: &str) -> Result<i64, String> {
+    stdx::parse_unix_time(text)
 }
 
 /// Runs the compiler with `PapyrusCompiler.exe` style arguments and returns
@@ -310,5 +346,35 @@ mod tests {
         assert!(a.options.optimize && a.quiet);
         assert_eq!(a.asm, AsmMode::Keep);
         assert!(Args::parse(&["-bogus".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn header_arguments() {
+        let a = parse(&[
+            "Foo",
+            "-user=",
+            "-computer",
+            "CI",
+            "-time=2024-01-31T12:00:00Z",
+            "-sourcetime:0",
+        ]);
+        let h = &a.options.header;
+        assert_eq!((h.user.as_deref(), h.computer.as_deref()), (Some(""), Some("CI")));
+        assert_eq!((h.time, h.source_time), (Some(1_706_702_400), Some(0)));
+        assert!(Args::parse(&["Foo".to_owned(), "-time=yesterday".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn times() {
+        assert_eq!(parse_time("0"), Ok(0));
+        assert_eq!(parse_time("1706702400"), Ok(1_706_702_400));
+        assert_eq!(parse_time("1970-01-01"), Ok(0));
+        assert_eq!(parse_time("2000-03-01 00:00:01"), Ok(951_868_801));
+        assert_eq!(parse_time("2024-02-29T23:59:59z"), Ok(1_709_251_199));
+        for bad in
+            ["-1", "2023-02-29", "2024-13-01", "2024-01-01T24:00:00", "1969-12-31", "2024-1-1x", ""]
+        {
+            assert!(parse_time(bad).is_err(), "{bad}");
+        }
     }
 }
