@@ -127,15 +127,16 @@ pub(crate) fn assemble(
         functions: std::mem::take(&mut a.debug),
     });
     let src = PexStr::encode(&source.file_name);
-    let user = PexStr::encode(
-        &std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default(),
-    );
-    let machine = PexStr::encode(
-        &std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default(),
-    );
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
+    let header = &options.header;
+    let env = |a: &str, b: &str| std::env::var(a).or_else(|_| std::env::var(b)).unwrap_or_default();
+    let user = PexStr::encode(&header.user.clone().unwrap_or_else(|| env("USERNAME", "USER")));
+    let machine =
+        PexStr::encode(&header.computer.clone().unwrap_or_else(|| env("COMPUTERNAME", "HOSTNAME")));
+    let now = header.time.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64)
+    });
     PexFile {
         magic_number: LE_MAGIC_NUMBER,
         major_version: 3,

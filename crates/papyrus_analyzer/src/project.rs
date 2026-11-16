@@ -600,6 +600,7 @@ impl Server {
         let options = papyrus_compiler::CompileOptions {
             optimize: self.member_for(&path).is_some_and(|p| p.optimize),
             debug_info: true,
+            ..Default::default()
         };
         match papyrus_compiler::compile(&self.ws, file, &options) {
             Ok(pex) => Ok(papyrus_pex::disasm::disassemble(&pex, Default::default())),

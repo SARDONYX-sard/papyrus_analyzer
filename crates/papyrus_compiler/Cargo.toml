@@ -25,6 +25,7 @@ papyrus_intern.workspace = true
 papyrus_lexer.workspace  = true
 papyrus_parser.workspace = true
 papyrus_pex.workspace    = true
+stdx.workspace           = true
 
 annotate-snippets.workspace = true
 rayon.workspace             = true

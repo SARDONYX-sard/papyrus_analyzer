@@ -650,6 +650,85 @@ struct RawBuild {
     release: Option<Inheritable<bool>>,
     r#final: Option<Inheritable<bool>>,
     quiet: Option<Inheritable<bool>>,
+    header: Option<RawHeader>,
+}
+
+/// `[build.header]`, see [`PexHeader`].
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct RawHeader {
+    user: Option<String>,
+    computer: Option<String>,
+    time: Option<Spanned<toml::Value>>,
+    source_time: Option<Spanned<toml::Value>>,
+}
+
+/// `[build.header]`: what the built-in compiler writes in the header of the
+/// `.pex` files, instead of the user, the machine and the times of the build.
+/// Unset values keep the defaults. Settings rather than `[compiler] args`, which
+/// `PapyrusCompiler.exe` would not accept.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PexHeader {
+    /// `user`: the user name (`-user`).
+    pub user: Option<String>,
+    /// `computer`: the machine name (`-computer`).
+    pub computer: Option<String>,
+    /// `time`: the compilation time and the time of the written files, in
+    /// seconds since 1970 (`-time`).
+    pub time: Option<i64>,
+    /// `source-time`: the modification time of the sources in the debug
+    /// info, in seconds since 1970 (`-sourcetime`).
+    pub source_time: Option<i64>,
+}
+
+impl PexHeader {
+    /// Whether nothing is set.
+    pub fn is_empty(&self) -> bool {
+        *self == PexHeader::default()
+    }
+
+    /// The arguments of the built-in compiler.
+    fn args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(user) = &self.user {
+            args.push(format!("-user={user}"));
+        }
+        if let Some(computer) = &self.computer {
+            args.push(format!("-computer={computer}"));
+        }
+        if let Some(time) = self.time {
+            args.push(format!("-time={time}"));
+        }
+        if let Some(time) = self.source_time {
+            args.push(format!("-sourcetime={time}"));
+        }
+        args
+    }
+}
+
+/// `[build.header]`; the times are seconds since 1970 or UTC dates.
+fn pex_header(raw: Option<&RawHeader>, errors: &mut Vec<ManifestError>) -> PexHeader {
+    let Some(raw) = raw else { return PexHeader::default() };
+    let mut time = |key: &str, value: &Option<Spanned<toml::Value>>| {
+        let value = value.as_ref()?;
+        let parsed = match value.get_ref() {
+            toml::Value::Integer(n) => stdx::parse_unix_time(&n.to_string()),
+            toml::Value::String(s) => stdx::parse_unix_time(s),
+            _ => Err("expected seconds since 1970 or a date like \"2024-01-31T12:00:00Z\"".into()),
+        };
+        parsed
+            .map_err(|e| {
+                errors
+                    .push(ManifestError::new(format!("`build.header.{key}`: {e}"), span_of(value)))
+            })
+            .ok()
+    };
+    PexHeader {
+        time: time("time", &raw.time),
+        source_time: time("source-time", &raw.source_time),
+        user: raw.user.clone(),
+        computer: raw.computer.clone(),
+    }
 }
 
 fn default_sources() -> Vec<Spanned<String>> {
@@ -706,6 +785,8 @@ pub struct Project {
     pub r#final: bool,
     /// `build.quiet`: only report errors.
     pub quiet: bool,
+    /// `[build.header]`
+    pub header: PexHeader,
     /// `[format]`: formatter settings.
     pub format: FormatSettings,
     /// `[lints]`: the levels of the lints.
@@ -1020,6 +1101,7 @@ pub(crate) fn parse_with(
     let release = flag("build.release", &raw.build.release, |i| i.release, false);
     let r#final = flag("build.final", &raw.build.r#final, |i| i.r#final, false);
     let quiet = flag("build.quiet", &raw.build.quiet, |i| i.quiet, true);
+    let header = pex_header(raw.build.header.as_ref(), &mut resolver.errors);
     // Like `Cargo.toml`: only the tables asking for it, which set nothing else.
     let mut format = format_settings(&raw.format, &root, &mut resolver.errors);
     let format_warnings = std::mem::take(&mut format.warnings);
@@ -1054,6 +1136,12 @@ pub(crate) fn parse_with(
     let variables = resolver.used;
 
     let mut warnings = format_warnings;
+    if compiler.is_some() && raw.build.header.is_some() {
+        warnings.push(ManifestError::new(
+            "`[build.header]` is ignored with `[compiler] path`: only the built-in compiler writes it",
+            None,
+        ));
+    }
     for (path, raw) in sources.iter().zip(&raw_sources).chain(imports.iter().zip(own_imports)) {
         if !path.is_dir() {
             warnings.push(ManifestError::new(
@@ -1101,6 +1189,7 @@ pub(crate) fn parse_with(
         release,
         r#final,
         quiet,
+        header,
         format,
         lints,
         variables,
@@ -1263,6 +1352,7 @@ impl Project {
             release: false,
             r#final: false,
             quiet: true,
+            header: PexHeader::default(),
             format: FormatSettings::default(),
             lints: papyrus_lint::LintConfig::default(),
             variables: BTreeMap::new(),
@@ -1398,6 +1488,10 @@ impl Project {
             if on {
                 args.push(flag.to_owned());
             }
+        }
+        // `PapyrusCompiler.exe` has no such arguments.
+        if self.compiler.is_none() {
+            args.extend(self.header.args());
         }
         args.extend(self.extra_args.iter().cloned());
         Ok(CompileCommand { program, args, cwd: self.root.clone(), output })
@@ -1652,6 +1746,35 @@ mod tests {
         assert_eq!(s(&c.program), "pa");
         assert_eq!(c.args[..2], ["compile".to_owned(), "/m/X.psc".to_owned()]);
         assert!(c.args[2].starts_with("-import="));
+    }
+
+    #[test]
+    fn build_header() {
+        let text = "[build.header]\nuser = \"\"\ncomputer = \"CI\"\ntime = \"2024-01-31T12:00:00Z\"\nsource-time = 0\n";
+        let mut p = parse_str(text).unwrap();
+        let header = PexHeader {
+            user: Some(String::new()),
+            computer: Some("CI".to_owned()),
+            time: Some(1_706_702_400),
+            source_time: Some(0),
+        };
+        assert_eq!(p.header, header);
+        p.builtin_compiler = Some((PathBuf::from("pa"), Vec::new()));
+        let c = p.compile_file(Path::new("/m/X.psc")).unwrap();
+        for arg in ["-user=", "-computer=CI", "-time=1706702400", "-sourcetime=0"] {
+            assert!(c.args.iter().any(|a| a == arg), "{arg}: {:?}", c.args);
+        }
+
+        // `PapyrusCompiler.exe` gets none: a warning tells.
+        let official = parse_str(&format!("{}\n{text}", template("1.0.0"))).unwrap();
+        let c = official.compile_file(Path::new("/m/X.psc")).unwrap();
+        assert!(!c.args.iter().any(|a| a.starts_with("-user")), "{:?}", c.args);
+        assert!(official.warnings.iter().any(|w| w.message.contains("[build.header]")));
+
+        let errors =
+            parse_str("[build.header]\ntime = \"yesterday\"\nsource-time = true\n").unwrap_err();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().all(|e| e.span.is_some()));
     }
 
     #[test]

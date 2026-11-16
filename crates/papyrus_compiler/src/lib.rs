@@ -40,12 +40,30 @@ pub struct CompileOptions {
     pub optimize: bool,
     /// Write line numbers, needed for script errors in the game logs.
     pub debug_info: bool,
+    /// What the header says about the compilation, see [`PexHeader`].
+    pub header: PexHeader,
 }
 
 impl Default for CompileOptions {
     fn default() -> Self {
-        CompileOptions { optimize: false, debug_info: true }
+        CompileOptions { optimize: false, debug_info: true, header: PexHeader::default() }
     }
+}
+
+/// The fields of the `.pex` header that depend on the machine and the time,
+/// as the official compiler writes them. Set, they make builds reproducible
+/// or hide the user and machine names; `None` keeps the default.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PexHeader {
+    /// The user name; default: `USERNAME` (or `USER`).
+    pub user: Option<String>,
+    /// The machine name; default: `COMPUTERNAME` (or `HOSTNAME`).
+    pub computer: Option<String>,
+    /// The compilation time, in seconds since 1970; default: now.
+    pub time: Option<i64>,
+    /// The modification time of the source in the debug info, in seconds
+    /// since 1970; default: the one of the file.
+    pub source_time: Option<i64>,
 }
 
 /// Why a script did not compile.
@@ -83,10 +101,11 @@ pub fn compile(
     let sema = source.sema(ws, file);
     let info = assemble::SourceInfo {
         file_name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
-        modified: ws
-            .modified(file)
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_secs() as i64),
+        modified: options.header.source_time.unwrap_or_else(|| {
+            ws.modified(file)
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64)
+        }),
     };
     let pex = assemble::assemble(sema, bodies, &info, options);
     log::info!(

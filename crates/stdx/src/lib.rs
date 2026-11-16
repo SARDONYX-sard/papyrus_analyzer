@@ -114,6 +114,48 @@ fn name_matches(glob: &str, name: &str) -> bool {
     go(&glob.chars().collect::<Vec<_>>(), &name.chars().collect::<Vec<_>>())
 }
 
+/// A time in seconds since 1970, from seconds since 1970 or a UTC date,
+/// `2024-01-31` or `2024-01-31T12:00:00` (`Z` and a space for `T` allowed).
+pub fn parse_unix_time(text: &str) -> Result<i64, String> {
+    let bad = || {
+        format!(
+            "bad time `{text}`: expected seconds since 1970 or a date like 2024-01-31T12:00:00Z"
+        )
+    };
+    let text = text.trim();
+    if let Ok(secs) = text.parse::<i64>() {
+        return if secs >= 0 { Ok(secs) } else { Err(bad()) };
+    }
+    let text = text.strip_suffix(['Z', 'z']).unwrap_or(text);
+    let (date, time) = text.split_once(['T', 't', ' ']).unwrap_or((text, "00:00:00"));
+    let num = |s: &str| s.parse::<i64>().ok().filter(|_| s.bytes().all(|b| b.is_ascii_digit()));
+    let date: Vec<i64> = date.split('-').map(num).collect::<Option<_>>().ok_or_else(bad)?;
+    let time: Vec<i64> = time.split(':').map(num).collect::<Option<_>>().ok_or_else(bad)?;
+    let (&[y, m, d], &[hh, mm, ss]) = (date.as_slice(), time.as_slice()) else {
+        return Err(bad());
+    };
+    let days_in_month = match m {
+        2 if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if y < 1970 || !(1..=12).contains(&m) || !(1..=days_in_month).contains(&d) {
+        return Err(bad());
+    }
+    if hh > 23 || mm > 59 || ss > 59 {
+        return Err(bad());
+    }
+    // Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant).
+    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Ok(days * 86_400 + hh * 3_600 + mm * 60 + ss)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

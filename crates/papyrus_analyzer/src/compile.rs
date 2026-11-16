@@ -60,5 +60,11 @@ pub(crate) fn run(args: &[String]) -> i32 {
     args.output = Some(project.output.clone());
     args.options.optimize = project.optimize;
     args.quiet = project.quiet;
+    // `[build.header]`, over the defaults (`SOURCE_DATE_EPOCH` included).
+    let (header, settings) = (&mut args.options.header, &project.header);
+    header.user = settings.user.clone().or(header.user.take());
+    header.computer = settings.computer.clone().or(header.computer.take());
+    header.time = settings.time.or(header.time);
+    header.source_time = settings.source_time.or(header.source_time);
     cli::run_args(&args)
 }

@@ -117,6 +117,20 @@ keyword-case  = "canonical"
 - Every setting: `$schema`, with [Tombi](https://github.com/tombi-toml/tombi) or [TOML Analyzer](https://github.com/Thoughts-with-friends/toml_analyzer).
 - Template: `Papyrus: Create papyrus.toml`.
 
+### `.pex` header
+
+The compiler writes the user name, the machine name and the times of the build in each `.pex`. The built-in compiler can write other values instead, for reproducible builds or to keep names out of released files:
+
+```toml
+[build.header]
+user        = ""                     # default: USERNAME; "" writes none
+computer    = ""                     # default: COMPUTERNAME
+time        = "2024-01-31T12:00:00Z" # compilation time, also of the written files; default: SOURCE_DATE_EPOCH, else now
+source-time = 0                      # source modification time in the debug info; default: the one of each file
+```
+
+Times are seconds since 1970 or UTC dates. On the command line: `-user=`, `-computer=`, `-time=`, `-sourcetime=` (not in `PapyrusCompiler.exe`, which is why they are settings here rather than `[compiler] args`). With `[compiler] path`, `[build.header]` is ignored with a warning.
+
 ### Identifier casing
 
 The formatter keeps names as written. Their spelling is the `name-case` lint (pedantic: off by default), which checks the scripts of the workspace only (imported scripts are left alone) and has a quick fix:
