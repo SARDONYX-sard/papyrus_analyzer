@@ -225,6 +225,7 @@ impl RawManifest {
         asks("build.release", flag(build.release.clone()));
         asks("build.final", flag(build.r#final.clone()));
         asks("build.quiet", flag(build.quiet.clone()));
+        asks("build.header", build.header.as_ref().is_some_and(RawHeader::inherits));
         out
     }
 }
@@ -656,7 +657,8 @@ struct RawBuild {
 /// `[build.header]`, see [`PexHeader`].
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-struct RawHeader {
+pub(crate) struct RawHeader {
+    workspace: Option<Spanned<bool>>,
     user: Option<String>,
     computer: Option<String>,
     time: Option<Spanned<toml::Value>>,
@@ -706,9 +708,33 @@ impl PexHeader {
     }
 }
 
+impl RawHeader {
+    /// `workspace = true`: `[workspace.build.header]`.
+    fn inherits(&self) -> bool {
+        self.workspace.as_ref().is_some_and(|w| *w.get_ref())
+    }
+
+    /// Whether `workspace` is written, `true` or not.
+    pub(crate) fn has_workspace(&self) -> bool {
+        self.workspace.is_some()
+    }
+}
+
 /// `[build.header]`; the times are seconds since 1970 or UTC dates.
-fn pex_header(raw: Option<&RawHeader>, errors: &mut Vec<ManifestError>) -> PexHeader {
+pub(crate) fn pex_header(raw: Option<&RawHeader>, errors: &mut Vec<ManifestError>) -> PexHeader {
     let Some(raw) = raw else { return PexHeader::default() };
+    // Like `[format]`: `workspace = true` alone.
+    if let Some(workspace) = &raw.workspace {
+        let own = raw.user.is_some()
+            || raw.computer.is_some()
+            || raw.time.is_some()
+            || raw.source_time.is_some();
+        if !*workspace.get_ref() {
+            errors.push(ManifestError::new("`workspace` cannot be false", span_of(workspace)));
+        } else if own {
+            errors.push(cannot_override("build.header", span_of(workspace)));
+        }
+    }
     let mut time = |key: &str, value: &Option<Spanned<toml::Value>>| {
         let value = value.as_ref()?;
         let parsed = match value.get_ref() {
@@ -1101,7 +1127,15 @@ pub(crate) fn parse_with(
     let release = flag("build.release", &raw.build.release, |i| i.release, false);
     let r#final = flag("build.final", &raw.build.r#final, |i| i.r#final, false);
     let quiet = flag("build.quiet", &raw.build.quiet, |i| i.quiet, true);
-    let header = pex_header(raw.build.header.as_ref(), &mut resolver.errors);
+    let mut header = pex_header(raw.build.header.as_ref(), &mut resolver.errors);
+    if raw.build.header.as_ref().is_some_and(RawHeader::inherits)
+        && let Some(i) = inherited
+    {
+        match &i.header {
+            Some(settings) => header = settings.clone(),
+            None => resolver.errors.push(not_defined("build.header")),
+        }
+    }
     // Like `Cargo.toml`: only the tables asking for it, which set nothing else.
     let mut format = format_settings(&raw.format, &root, &mut resolver.errors);
     let format_warnings = std::mem::take(&mut format.warnings);
@@ -1136,7 +1170,7 @@ pub(crate) fn parse_with(
     let variables = resolver.used;
 
     let mut warnings = format_warnings;
-    if compiler.is_some() && raw.build.header.is_some() {
+    if compiler.is_some() && !header.is_empty() {
         warnings.push(ManifestError::new(
             "`[build.header]` is ignored with `[compiler] path`: only the built-in compiler writes it",
             None,
@@ -1787,12 +1821,12 @@ mod tests {
         let w = |p: &str, text: &str| std::fs::write(dir.join(p), text).unwrap();
         w(
             "papyrus.toml",
-            "[var]\nMODS = \"mods\"\n[workspace]\nmembers = [\"${MODS}/*\"]\nexclude = [\"${MODS}/Old\"]\n[workspace.var]\nGAME = \"game\"\n[workspace.build]\nimports = [\"${GAME}\"]\nflags = \"${GAME}/f.flg\"\noptimize = false\n[workspace.lints]\nall = \"deny\"\n[workspace.format]\nindent-size = 2\n",
+            "[var]\nMODS = \"mods\"\n[workspace]\nmembers = [\"${MODS}/*\"]\nexclude = [\"${MODS}/Old\"]\n[workspace.var]\nGAME = \"game\"\n[workspace.build]\nimports = [\"${GAME}\"]\nflags = \"${GAME}/f.flg\"\noptimize = false\n[workspace.build.header]\nuser = \"\"\ntime = 0\n[workspace.lints]\nall = \"deny\"\n[workspace.format]\nindent-size = 2\n",
         );
         w("mods/Lib/papyrus.toml", "[package]\nname = \"Lib\"\n");
         w(
             "mods/App/papyrus.toml",
-            "[package]\nname = \"App\"\n[var]\nGAME.workspace = true\n[build]\noutput = \"${GAME}/out\"\nimports.workspace = true\nflags.workspace = true\noptimize.workspace = true\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nworkspace = true\n[format]\nworkspace = true\n",
+            "[package]\nname = \"App\"\n[var]\nGAME.workspace = true\n[build]\noutput = \"${GAME}/out\"\nimports.workspace = true\nflags.workspace = true\noptimize.workspace = true\n[dependencies]\nLib = { path = \"../Lib\" }\n[lints]\nworkspace = true\n[format]\nworkspace = true\n[build.header]\nworkspace = true\n",
         );
         w("mods/Old/papyrus.toml", "[package]\nname = \"Old\"\n");
 
@@ -1818,6 +1852,9 @@ mod tests {
         let level = |p: &Project, code| p.lints.level(papyrus_lint::find(code).unwrap());
         assert_eq!(level(app, "unreachable-code"), papyrus_lint::Level::Deny);
         assert_eq!(app.format.indent_size, Some(2));
+        let header = PexHeader { user: Some(String::new()), time: Some(0), ..PexHeader::default() };
+        assert_eq!(app.header, header);
+        assert!(ws.members[1].header.is_empty());
         assert_eq!(
             ws.member_for(&dir.join("mods/Lib/A.psc")).unwrap().name.as_deref(),
             Some("Lib")
@@ -1992,6 +2029,10 @@ mod tests {
         assert_eq!(lints.as_deref(), Some("`workspace` cannot be false"));
         let (_, format, _) = errors_of("[format]\nworkspace = false\n");
         assert_eq!(format.as_deref(), Some("`workspace` cannot be false"));
+        let (_, _, whole) = errors_of("[build.header]\nworkspace = false\n");
+        assert!(whole.unwrap().contains("`workspace` cannot be false"));
+        let (_, _, whole) = errors_of("[build.header]\nworkspace = true\nuser = \"\"\n");
+        assert!(whole.unwrap().contains("cannot override `workspace.build.header`"));
         let (lints, _, _) = errors_of("[lints]\nworkspace = \"yes\"\n");
         assert!(lints.is_some());
 

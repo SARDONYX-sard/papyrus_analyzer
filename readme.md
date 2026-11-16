@@ -129,7 +129,7 @@ time        = "2024-01-31T12:00:00Z" # compilation time, also of the written fil
 source-time = 0                      # source modification time in the debug info; default: the one of each file
 ```
 
-Times are seconds since 1970 or UTC dates. On the command line: `-user=`, `-computer=`, `-time=`, `-sourcetime=` (not in `PapyrusCompiler.exe`, which is why they are settings here rather than `[compiler] args`). With `[compiler] path`, `[build.header]` is ignored with a warning.
+Times are seconds since 1970 or UTC dates. On the command line: `-user=`, `-computer=`, `-time=`, `-sourcetime=` (not in `PapyrusCompiler.exe`, which is why they are settings here rather than `[compiler] args`). With `[compiler] path`, `[build.header]` is ignored with a warning. In a workspace, members take `[workspace.build.header]` with `[build.header] workspace = true`, like `[format]`.
 
 ### Identifier casing
 

@@ -9,12 +9,13 @@
 //! [workspace.var]
 //! [workspace.compiler]              # path, args
 //! [workspace.build]                 # imports, flags, optimize, release, final, quiet
+//! [workspace.build.header]          # user, computer, time, source-time
 //! [workspace.lints]
 //! [workspace.format]
 //! ```
 //!
 //! Like in `Cargo.toml`, nothing applies by itself: a member asks for each value,
-//! and for `lints` and `format` as a whole. Its own values replace the ones of the
+//! and for `lints`, `format` and `build.header` as a whole. Its own values replace the ones of the
 //! workspace. `false` is an error, and so is having nothing to inherit.
 //!
 //! ```toml
@@ -52,8 +53,8 @@ use serde::Deserialize;
 use toml::Spanned;
 
 use crate::{
-    FormatSettings, MANIFEST_NAME, ManifestError, Project, RawFormat, RawLocal, Variables,
-    format_settings, lint_settings_into, plain_vars, resolve_path,
+    FormatSettings, MANIFEST_NAME, ManifestError, PexHeader, Project, RawFormat, RawHeader,
+    RawLocal, Variables, format_settings, lint_settings_into, pex_header, plain_vars, resolve_path,
 };
 
 #[derive(Debug, Default, Deserialize)]
@@ -89,6 +90,7 @@ struct RawWorkspaceBuild {
     release: Option<bool>,
     r#final: Option<bool>,
     quiet: Option<bool>,
+    header: Option<RawHeader>,
 }
 
 /// `name = { path = "..." }` of `[dependencies]`.
@@ -122,6 +124,8 @@ pub(crate) struct Inherited {
     pub(crate) lints: Option<papyrus_lint::LintConfig>,
     /// `[workspace.format]`, when there is one.
     pub(crate) format: Option<FormatSettings>,
+    /// `[workspace.build.header]`, when there is one.
+    pub(crate) header: Option<PexHeader>,
 }
 
 /// The projects of a workspace manifest, or the one project of a manifest
@@ -309,10 +313,11 @@ fn inherited(
         ws.build.imports.as_ref().map(|list| list.iter().filter_map(&mut path).collect());
     let flags = ws.build.flags.as_ref().and_then(&mut path);
     let asks_itself = ws.lints.as_ref().is_some_and(|l| l.contains_key("workspace"))
-        || ws.format.as_ref().is_some_and(|f| f.workspace.is_some());
+        || ws.format.as_ref().is_some_and(|f| f.workspace.is_some())
+        || ws.build.header.as_ref().is_some_and(RawHeader::has_workspace);
     if asks_itself {
         errors.push(ManifestError::new(
-            "`workspace` belongs to the `[lints]` and `[format]` of the members",
+            "`workspace` belongs to the `[lints]`, `[format]` and `[build.header]` of the members",
             None,
         ));
     }
@@ -322,6 +327,7 @@ fn inherited(
         config
     });
     let format = ws.format.as_ref().map(|raw| format_settings(raw, dir, &mut errors));
+    let header = ws.build.header.as_ref().map(|raw| pex_header(Some(raw), &mut errors));
     if !errors.is_empty() {
         return Err(errors.into_iter().map(|e| e.in_file(root)).collect());
     }
@@ -340,6 +346,7 @@ fn inherited(
         quiet: ws.build.quiet,
         lints,
         format,
+        header,
     })
 }
 

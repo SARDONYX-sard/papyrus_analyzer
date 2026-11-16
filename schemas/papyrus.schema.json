@@ -111,6 +111,10 @@
           "additionalProperties": false,
           "description": "What the built-in compiler writes in the header of the .pex files instead of the user, the machine and the times of the build: for reproducible builds, or to keep names out of released files. Unset values keep the defaults. Ignored with [compiler] path: PapyrusCompiler.exe has no such options.",
           "properties": {
+            "workspace": {
+              "type": "boolean",
+              "description": "Use [workspace.build.header] of the workspace. Must be true, and alone in this table."
+            },
             "user": { "type": "string", "description": "The user name (default: USERNAME). \"\" writes none." },
             "computer": { "type": "string", "description": "The machine name (default: COMPUTERNAME). \"\" writes none." },
             "time": {
@@ -455,6 +459,17 @@
               "type": "boolean",
               "default": true,
               "description": "-quiet: only report errors."
+            },
+            "header": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "[build.header] that members take with `[build.header] workspace = true`.",
+              "properties": {
+                "user": { "type": "string", "description": "The user name (default: USERNAME). \"\" writes none." },
+                "computer": { "type": "string", "description": "The machine name (default: COMPUTERNAME). \"\" writes none." },
+                "time": { "$ref": "#/definitions/unixTime", "description": "The compilation time, also given to the written .pex files." },
+                "source-time": { "$ref": "#/definitions/unixTime", "description": "The modification time of the sources in the debug info." }
+              }
             }
           }
         },
