@@ -44,6 +44,23 @@ papyrus_compiler MyQuest -i=Source -o=Scripts -f=TESV_Papyrus_Flags.flg   # Papy
 
 Download: [releases](https://github.com/SARDONYX-sard/papyrus_analyzer/releases) — `papyrus_analyzer` · VS Code extension (`.vsix`).
 
+### GitHub Action
+
+`setup-papyrus_analyzer` puts the executable of a release on the `PATH` (no Rust, no build); what to run with it is up to the workflow.
+
+```yaml
+- uses: actions/checkout@v7
+- uses: SARDONYX-sard/papyrus_analyzer@0.6.0 # installs this release, unless `version` says another
+  with:
+    version: latest # or a tag: `0.6.0`
+- run: papyrus_analyzer lint -D warnings .
+- run: papyrus_analyzer fmt --check .
+```
+
+The input `version` defaults to the tag the action is used at, else `latest`; the outputs `path` and `version` give the executable and the release installed.
+
+Each release from 0.6.0 carries the bare executables (`papyrus_analyzer-<target>[.exe]`) the action downloads, for Linux x64, macOS ARM64 and Windows x64.
+
 ## VS Code
 
 1.91+, also Cursor, Antigravity...
